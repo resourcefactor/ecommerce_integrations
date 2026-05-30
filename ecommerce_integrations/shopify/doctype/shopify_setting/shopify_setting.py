@@ -19,7 +19,9 @@ from ecommerce_integrations.shopify.constants import (
 	ADDRESS_ID_FIELD,
 	CUSTOMER_ID_FIELD,
 	FULLFILLMENT_ID_FIELD,
+	ITEM_PUBLISH_FIELD,
 	ITEM_SELLING_RATE_FIELD,
+	MODULE_NAME,
 	ORDER_ID_FIELD,
 	ORDER_ITEM_DISCOUNT_FIELD,
 	ORDER_NUMBER_FIELD,
@@ -106,15 +108,67 @@ class ShopifySetting(SettingController):
 			wh_map.shopify_location_id: wh_map.erpnext_warehouse for wh_map in self.shopify_warehouse_mapping
 		}
 
+	def get_item_price(self, item_code):
+		if not self.price_list:
+			return None
+		return frappe.db.get_value(
+			"Item Price",
+			{"item_code": item_code, "price_list": self.price_list, "selling": 1},
+			"price_list_rate",
+		)
+
+	@frappe.whitelist()
+	def sync_items_to_shopify(self):
+		items = frappe.get_all(
+			"Item",
+			filters={ITEM_PUBLISH_FIELD: 1, "disabled": 0, "has_variants": 0},
+			pluck="name",
+		)
+		enqueued = 0
+		for item_code in items:
+			if frappe.db.exists("Ecommerce Item", {"erpnext_item_code": item_code, "integration": MODULE_NAME}):
+				continue
+			frappe.enqueue(
+				"ecommerce_integrations.shopify.product.upload_erpnext_item",
+				doc=frappe.get_doc("Item", item_code),
+				queue="long",
+			)
+			enqueued += 1
+		return _("{0} item(s) queued for Shopify sync.").format(enqueued)
+
+	@frappe.whitelist()
+	@connection.temp_shopify_session
+	def sync_price_to_shopify(self):
+		from shopify.resources import Variant
+
+		if not self.price_list:
+			frappe.throw(_("Please set a Price List in Shopify Setting first."))
+		synced_items = frappe.get_all(
+			"Ecommerce Item",
+			filters={"integration": MODULE_NAME, "has_variants": 0},
+			fields=["erpnext_item_code", "variant_id"],
+		)
+		updated = 0
+		for ecom in synced_items:
+			price = self.get_item_price(ecom.erpnext_item_code)
+			if price and ecom.variant_id:
+				variant = Variant.find(ecom.variant_id)
+				if variant:
+					variant.price = price
+					variant.save()
+					updated += 1
+		return _("{0} item price(s) synced to Shopify.").format(updated)
+
 
 def setup_custom_fields():
 	custom_fields = {
 		"Item": [
 			dict(
-				fieldname=ITEM_SELLING_RATE_FIELD,
-				label="Shopify Selling Rate",
-				fieldtype="Currency",
+				fieldname=ITEM_PUBLISH_FIELD,
+				label="Publish on Website",
+				fieldtype="Check",
 				insert_after="standard_rate",
+				default=0,
 			)
 		],
 		"Customer": [

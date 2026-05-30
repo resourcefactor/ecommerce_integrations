@@ -42,6 +42,7 @@
   "default_shipping_charges_account",
   "erpnext_to_shopify_sync_section",
   "upload_erpnext_items",
+  "price_list",
   "update_shopify_item_on_update",
   "column_break_34",
   "sync_new_item_as_active",
@@ -242,6 +243,14 @@
    "fieldname": "upload_erpnext_items",
    "fieldtype": "Check",
    "label": "Upload new ERPNext Items to Shopify"
+  },
+  {
+   "depends_on": "eval:doc.upload_erpnext_items",
+   "description": "Price list used to fetch item rates when uploading items to Shopify",
+   "fieldname": "price_list",
+   "fieldtype": "Link",
+   "label": "Price List",
+   "options": "Price List"
   },
   {
    "default": "0",

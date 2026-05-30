@@ -8,6 +8,7 @@ from frappe.utils.nestedset import get_root_of
 from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item import ecommerce_item
 from ecommerce_integrations.shopify.connection import temp_shopify_session
 from ecommerce_integrations.shopify.constants import (
+	ITEM_PUBLISH_FIELD,
 	ITEM_SELLING_RATE_FIELD,
 	MODULE_NAME,
 	SETTING_DOCTYPE,
@@ -354,6 +355,9 @@ def upload_erpnext_item(doc, method=None):
 		msgprint(_("Template items/Items with 4 or more attributes can not be uploaded to Shopify."))
 		return
 
+	if not item.get(ITEM_PUBLISH_FIELD):
+		return
+
 	if doc.variant_of and not setting.upload_variants_as_items:
 		msgprint(_("Enable variant sync in setting to upload item to Shopify."))
 		return
@@ -380,7 +384,7 @@ def upload_erpnext_item(doc, method=None):
 			update_default_variant_properties(
 				product,
 				sku=template_item.item_code,
-				price=template_item.get(ITEM_SELLING_RATE_FIELD),
+				price=setting.get_item_price(template_item.item_code),
 				is_stock_item=template_item.is_stock_item,
 			)
 			if item.variant_of:
@@ -389,7 +393,7 @@ def upload_erpnext_item(doc, method=None):
 				variant_attributes = {
 					"title": template_item.item_name,
 					"sku": item.item_code,
-					"price": item.get(ITEM_SELLING_RATE_FIELD),
+					"price": setting.get_item_price(item.item_code),
 				}
 				max_index_range = min(3, len(template_item.attributes))
 				for i in range(0, max_index_range):
@@ -437,10 +441,10 @@ def upload_erpnext_item(doc, method=None):
 				update_default_variant_properties(
 					product,
 					is_stock_item=template_item.is_stock_item,
-					price=item.get(ITEM_SELLING_RATE_FIELD),
+					price=setting.get_item_price(item.item_code),
 				)
 			else:
-				variant_attributes = {"sku": item.item_code, "price": item.get(ITEM_SELLING_RATE_FIELD)}
+				variant_attributes = {"sku": item.item_code, "price": setting.get_item_price(item.item_code)}
 				product.options = []
 				max_index_range = min(3, len(template_item.attributes))
 				for i in range(0, max_index_range):
