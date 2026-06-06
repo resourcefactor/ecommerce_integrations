@@ -80,6 +80,19 @@ class ShopifySetting(SettingController):
 	def _initalize_default_values(self):
 		if not self.last_inventory_sync:
 			self.last_inventory_sync = get_datetime("1970-01-01")
+		if not self.last_item_sync:
+			self.last_item_sync = get_datetime("1970-01-01")
+		if not self.shopify_field_mapping:
+			for erpnext_field, shopify_field in [
+				("item_name", "title"),
+				("description", "body_html"),
+				("item_group", "product_type"),
+				("brand", "vendor"),
+			]:
+				self.append("shopify_field_mapping", {
+					"erpnext_field": erpnext_field,
+					"shopify_field": shopify_field,
+				})
 
 	@frappe.whitelist()
 	@connection.temp_shopify_session

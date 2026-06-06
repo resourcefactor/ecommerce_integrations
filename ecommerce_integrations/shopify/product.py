@@ -5,6 +5,8 @@ from frappe import _, msgprint
 from frappe.utils import cint, cstr
 from frappe.utils.nestedset import get_root_of
 
+from ecommerce_integrations.controllers.scheduling import need_to_run
+
 from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item import ecommerce_item
 from ecommerce_integrations.shopify.connection import temp_shopify_session
 from ecommerce_integrations.shopify.constants import (
@@ -377,7 +379,9 @@ def upload_erpnext_item(doc, method=None):
 		product.published = False
 		product.status = "active" if setting.sync_new_item_as_active else "draft"
 
-		map_erpnext_item_to_shopify(shopify_product=product, erpnext_item=template_item)
+		extra_variant_fields, metafields = map_erpnext_item_to_shopify(
+			shopify_product=product, erpnext_item=template_item, setting=setting
+		)
 		is_successful = product.save()
 
 		if is_successful:
@@ -386,6 +390,7 @@ def upload_erpnext_item(doc, method=None):
 				sku=template_item.item_code,
 				price=setting.get_item_price(template_item.item_code),
 				is_stock_item=template_item.is_stock_item,
+				extra_variant_fields=extra_variant_fields,
 			)
 			if item.variant_of:
 				product.options = []
@@ -415,6 +420,7 @@ def upload_erpnext_item(doc, method=None):
 				product.variants.append(Variant(variant_attributes))
 
 			product.save()  # push variant
+			_apply_metafields(product.id, metafields)
 
 			ecom_items = list(set([item, template_item]))
 			for d in ecom_items:
@@ -436,12 +442,15 @@ def upload_erpnext_item(doc, method=None):
 	elif setting.update_shopify_item_on_update:
 		product = Product.find(product_id)
 		if product:
-			map_erpnext_item_to_shopify(shopify_product=product, erpnext_item=template_item)
+			extra_variant_fields, metafields = map_erpnext_item_to_shopify(
+				shopify_product=product, erpnext_item=template_item, setting=setting
+			)
 			if not item.variant_of:
 				update_default_variant_properties(
 					product,
 					is_stock_item=template_item.is_stock_item,
 					price=setting.get_item_price(item.item_code),
+					extra_variant_fields=extra_variant_fields,
 				)
 			else:
 				variant_attributes = {"sku": item.item_code, "price": setting.get_item_price(item.item_code)}
@@ -466,8 +475,10 @@ def upload_erpnext_item(doc, method=None):
 				product.variants.append(Variant(variant_attributes))
 
 			is_successful = product.save()
-			if is_successful and item.variant_of:
-				map_erpnext_variant_to_shopify_variant(product, item, variant_attributes)
+			if is_successful:
+				_apply_metafields(product.id, metafields)
+				if item.variant_of:
+					map_erpnext_variant_to_shopify_variant(product, item, variant_attributes)
 
 			write_upload_log(status=is_successful, product=product, item=item, action="Updated")
 
@@ -504,15 +515,42 @@ def map_erpnext_variant_to_shopify_variant(shopify_product: Product, erpnext_ite
 	return variant_product_id
 
 
-def map_erpnext_item_to_shopify(shopify_product: Product, erpnext_item):
-	"""Map erpnext fields to shopify, called both when updating and creating new products."""
+def map_erpnext_item_to_shopify(shopify_product: Product, erpnext_item, setting=None):
+	"""Map erpnext fields to shopify, called both when updating and creating new products.
 
-	shopify_product.title = erpnext_item.item_name
-	shopify_product.body_html = erpnext_item.description
-	shopify_product.product_type = erpnext_item.item_group
+	Returns (extra_variant_fields, metafields) collected from the field mapping table.
+	Weight mapping is kept hardcoded because it requires UOM conversion.
+	"""
+	# apply user-configured field mapping table (overrides hardcoded defaults below)
+	extra_variant_fields = {}
+	metafields = []
+	for row in (setting.get("shopify_field_mapping") if setting else []):
+		if not row.erpnext_field or not row.shopify_field:
+			continue
+		value = erpnext_item.get(row.erpnext_field)
+		if value is None or value == "":
+			continue
+		sf = row.shopify_field.strip()
+		if sf.startswith("variant:"):
+			extra_variant_fields[sf[len("variant:"):]] = value
+		elif sf.startswith("metafield:"):
+			ns_key = sf[len("metafield:"):]
+			if "." in ns_key:
+				ns, key = ns_key.split(".", 1)
+				metafields.append({
+					"namespace": ns,
+					"key": key,
+					"value": str(value),
+					"type": "single_line_text_field",
+				})
+		else:
+			setattr(shopify_product, sf, value)
+
+	# custom_shopify_title takes priority over item_name → title mapping
+	if erpnext_item.get("custom_shopify_title"):
+		shopify_product.title = erpnext_item.get("custom_shopify_title")
 
 	if erpnext_item.weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values():
-		# reverse lookup for key
 		uom = get_shopify_weight_uom(erpnext_weight_uom=erpnext_item.weight_uom)
 		shopify_product.weight = erpnext_item.weight_per_unit
 		shopify_product.weight_unit = uom
@@ -521,6 +559,8 @@ def map_erpnext_item_to_shopify(shopify_product: Product, erpnext_item):
 		shopify_product.status = "draft"
 		shopify_product.published = False
 		msgprint(_("Status of linked Shopify product is changed to Draft."))
+
+	return extra_variant_fields, metafields
 
 
 def get_shopify_weight_uom(erpnext_weight_uom: str) -> str:
@@ -534,11 +574,12 @@ def update_default_variant_properties(
 	is_stock_item: bool,
 	sku: str | None = None,
 	price: float | None = None,
+	extra_variant_fields: dict | None = None,
 ):
 	"""Shopify creates default variant upon saving the product.
 
 	Some item properties are supposed to be updated on the default variant.
-	Input: saved shopify_product, sku and price
+	Input: saved shopify_product, sku, price, and any extra variant fields from the mapping table.
 	"""
 	default_variant: Variant = shopify_product.variants[0]
 
@@ -550,6 +591,27 @@ def update_default_variant_properties(
 		default_variant.price = price
 	if sku is not None:
 		default_variant.sku = sku
+	if extra_variant_fields:
+		for field, val in extra_variant_fields.items():
+			setattr(default_variant, field, val)
+
+
+def _apply_metafields(product_id, metafields: list) -> None:
+	if not metafields:
+		return
+	from shopify.resources import Metafield
+	for mf in metafields:
+		try:
+			Metafield.create({
+				"namespace": mf["namespace"],
+				"key": mf["key"],
+				"value": mf["value"],
+				"type": mf["type"],
+				"owner_resource": "product",
+				"owner_id": product_id,
+			})
+		except Exception:
+			pass
 
 
 def write_upload_log(status: bool, product: Product, item, action="Created") -> None:
@@ -571,3 +633,67 @@ def write_upload_log(status: bool, product: Product, item, action="Created") -> 
 			message=f"{action} Item: {item.name}, shopify product: {product.id}",
 			method="upload_erpnext_item",
 		)
+
+
+def sync_items_and_price_to_shopify() -> None:
+	"""Scheduled job: push title, description and price for all synced items.
+
+	Runs on the same interval as inventory sync (inventory_sync_frequency / last_item_sync).
+	"""
+	setting = frappe.get_doc(SETTING_DOCTYPE)
+
+	if not setting.is_enabled() or not setting.upload_erpnext_items:
+		return
+
+	if not need_to_run(SETTING_DOCTYPE, "inventory_sync_frequency", "last_item_sync"):
+		return
+
+	_do_sync_items_and_price(setting)
+
+
+@temp_shopify_session
+def _do_sync_items_and_price(setting) -> None:
+	synced_items = frappe.get_all(
+		"Ecommerce Item",
+		filters={"integration": MODULE_NAME, "has_variants": 0},
+		fields=["erpnext_item_code", "integration_item_code", "variant_id"],
+	)
+
+	updated = 0
+	errors = 0
+	for ecom in synced_items:
+		try:
+			item = frappe.get_doc("Item", ecom.erpnext_item_code)
+			shopify_product = Product.find(ecom.integration_item_code)
+			if not shopify_product:
+				continue
+
+			extra_variant_fields, metafields = map_erpnext_item_to_shopify(
+				shopify_product=shopify_product, erpnext_item=item, setting=setting
+			)
+
+			price = setting.get_item_price(item.item_code)
+			if (price is not None or extra_variant_fields) and ecom.variant_id:
+				default_variant = shopify_product.variants[0] if shopify_product.variants else None
+				if default_variant:
+					if price is not None:
+						default_variant.price = price
+					for field, val in (extra_variant_fields or {}).items():
+						setattr(default_variant, field, val)
+
+			shopify_product.save()
+			_apply_metafields(shopify_product.id, metafields)
+			updated += 1
+		except Exception as e:
+			errors += 1
+			create_shopify_log(
+				status="Error",
+				message=f"Scheduled sync failed for {ecom.erpnext_item_code}: {e}",
+				method="sync_items_and_price_to_shopify",
+			)
+
+	create_shopify_log(
+		status="Success" if errors == 0 else "Partial Success",
+		message=f"Scheduled item sync: {updated} updated, {errors} errors",
+		method="sync_items_and_price_to_shopify",
+	)
