@@ -132,27 +132,42 @@ class ShopifySetting(SettingController):
 
 	@frappe.whitelist()
 	def sync_items_to_shopify(self):
+		from ecommerce_integrations.shopify.utils import create_shopify_log
+
 		items = frappe.get_all(
 			"Item",
 			filters={ITEM_PUBLISH_FIELD: 1, "disabled": 0, "has_variants": 0},
 			pluck="name",
 		)
 		enqueued = 0
+		errors = 0
 		for item_code in items:
-			if frappe.db.exists("Ecommerce Item", {"erpnext_item_code": item_code, "integration": MODULE_NAME}):
-				continue
-			frappe.enqueue(
-				"ecommerce_integrations.shopify.product.upload_erpnext_item",
-				doc=frappe.get_doc("Item", item_code),
-				queue="long",
-			)
-			enqueued += 1
-		return _("{0} item(s) queued for Shopify sync.").format(enqueued)
+			try:
+				if frappe.db.exists("Ecommerce Item", {"erpnext_item_code": item_code, "integration": MODULE_NAME}):
+					continue
+				frappe.enqueue(
+					"ecommerce_integrations.shopify.product.upload_erpnext_item",
+					doc=frappe.get_doc("Item", item_code),
+					queue="long",
+				)
+				enqueued += 1
+			except Exception as e:
+				errors += 1
+				create_shopify_log(
+					status="Error",
+					message=f"Failed to queue {item_code} for Shopify sync: {e}",
+					method="sync_items_to_shopify",
+				)
+		msg = _("{0} item(s) queued for Shopify sync.").format(enqueued)
+		if errors:
+			msg += " " + _("{0} error(s) — check Ecommerce Integration Log.").format(errors)
+		return msg
 
 	@frappe.whitelist()
 	@connection.temp_shopify_session
 	def sync_price_to_shopify(self):
 		from shopify.resources import Variant
+		from ecommerce_integrations.shopify.utils import create_shopify_log
 
 		if not self.price_list:
 			frappe.throw(_("Please set a Price List in Shopify Setting first."))
@@ -162,15 +177,29 @@ class ShopifySetting(SettingController):
 			fields=["erpnext_item_code", "variant_id"],
 		)
 		updated = 0
+		errors = 0
 		for ecom in synced_items:
-			price = self.get_item_price(ecom.erpnext_item_code)
-			if price and ecom.variant_id:
+			try:
+				price = self.get_item_price(ecom.erpnext_item_code)
+				if not price or not ecom.variant_id:
+					continue
 				variant = Variant.find(ecom.variant_id)
-				if variant:
-					variant.price = price
-					variant.save()
-					updated += 1
-		return _("{0} item price(s) synced to Shopify.").format(updated)
+				if not variant:
+					continue
+				variant.price = price
+				variant.save()
+				updated += 1
+			except Exception as e:
+				errors += 1
+				create_shopify_log(
+					status="Error",
+					message=f"Price sync failed for {ecom.erpnext_item_code}: {e}",
+					method="sync_price_to_shopify",
+				)
+		msg = _("{0} item price(s) synced to Shopify.").format(updated)
+		if errors:
+			msg += " " + _("{0} error(s) — check Ecommerce Integration Log.").format(errors)
+		return msg
 
 
 def setup_custom_fields():

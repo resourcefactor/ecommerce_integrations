@@ -300,6 +300,11 @@ def _match_sku_and_link_item(item_dict, product_id, variant_id, variant_of=None,
 			ecommerce_item.insert()
 			return True
 		except Exception:
+			create_shopify_log(
+				status="Error",
+				message=f"Failed to link item by SKU: {sku}",
+				method="_match_sku_and_link_item",
+			)
 			return False
 
 
@@ -610,8 +615,12 @@ def _apply_metafields(product_id, metafields: list) -> None:
 				"owner_resource": "product",
 				"owner_id": product_id,
 			})
-		except Exception:
-			pass
+		except Exception as e:
+			create_shopify_log(
+				status="Error",
+				message=f"Failed to write metafield {mf.get('namespace')}.{mf.get('key')} on product {product_id}: {e}",
+				method="_apply_metafields",
+			)
 
 
 def write_upload_log(status: bool, product: Product, item, action="Created") -> None:
