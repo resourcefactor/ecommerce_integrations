@@ -42,10 +42,12 @@
   "default_shipping_charges_account",
   "erpnext_to_shopify_sync_section",
   "upload_erpnext_items",
+  "price_list",
   "update_shopify_item_on_update",
   "column_break_34",
   "sync_new_item_as_active",
   "upload_variants_as_items",
+  "shopify_field_mapping",
   "inventory_sync_section",
   "warehouse",
   "update_erpnext_stock_levels_to_shopify",
@@ -58,7 +60,8 @@
   "old_orders_from",
   "old_orders_to",
   "is_old_data_migrated",
-  "last_inventory_sync"
+  "last_inventory_sync",
+  "last_item_sync"
  ],
  "fields": [
   {
@@ -244,6 +247,14 @@
    "label": "Upload new ERPNext Items to Shopify"
   },
   {
+   "depends_on": "eval:doc.upload_erpnext_items",
+   "description": "Price list used to fetch item rates when uploading items to Shopify",
+   "fieldname": "price_list",
+   "fieldtype": "Link",
+   "label": "Price List",
+   "options": "Price List"
+  },
+  {
    "default": "0",
    "depends_on": "eval:doc.upload_erpnext_items",
    "fieldname": "update_shopify_item_on_update",
@@ -328,6 +339,13 @@
    "read_only": 1
   },
   {
+   "fieldname": "last_item_sync",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Last Item Sync",
+   "read_only": 1
+  },
+  {
    "fieldname": "column_break_34",
    "fieldtype": "Column Break"
   },
@@ -343,6 +361,14 @@
    "fieldname": "sync_new_item_as_active",
    "fieldtype": "Check",
    "label": "Sync New Items as Active"
+  },
+  {
+   "depends_on": "eval:doc.upload_erpnext_items",
+   "description": "Map ERPNext Item fields to Shopify product fields, variant fields, or metafields (metafield:namespace.key)",
+   "fieldname": "shopify_field_mapping",
+   "fieldtype": "Table",
+   "label": "Item Field Mapping",
+   "options": "Shopify Field Mapping"
   },
   {
    "default": "0",

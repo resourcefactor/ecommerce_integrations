@@ -18,7 +18,9 @@ from ecommerce_integrations.shopify.constants import (
 	ADDRESS_ID_FIELD,
 	CUSTOMER_ID_FIELD,
 	FULLFILLMENT_ID_FIELD,
+	ITEM_PUBLISH_FIELD,
 	ITEM_SELLING_RATE_FIELD,
+	MODULE_NAME,
 	ORDER_ID_FIELD,
 	ORDER_ITEM_DISCOUNT_FIELD,
 	ORDER_NUMBER_FIELD,
@@ -77,6 +79,19 @@ class ShopifySetting(SettingController):
 	def _initalize_default_values(self):
 		if not self.last_inventory_sync:
 			self.last_inventory_sync = get_datetime("1970-01-01")
+		if not self.last_item_sync:
+			self.last_item_sync = get_datetime("1970-01-01")
+		if not self.shopify_field_mapping:
+			for erpnext_field, shopify_field in [
+				("item_name", "title"),
+				("description", "body_html"),
+				("item_group", "product_type"),
+				("brand", "vendor"),
+			]:
+				self.append("shopify_field_mapping", {
+					"erpnext_field": erpnext_field,
+					"shopify_field": shopify_field,
+				})
 
 	@frappe.whitelist()
 	@connection.temp_shopify_session
@@ -105,15 +120,97 @@ class ShopifySetting(SettingController):
 			wh_map.shopify_location_id: wh_map.erpnext_warehouse for wh_map in self.shopify_warehouse_mapping
 		}
 
+	def get_item_price(self, item_code):
+		if not self.price_list:
+			return None
+		return frappe.db.get_value(
+			"Item Price",
+			{"item_code": item_code, "price_list": self.price_list, "selling": 1},
+			"price_list_rate",
+		)
+
+	@frappe.whitelist()
+	def sync_items_to_shopify(self):
+		from ecommerce_integrations.shopify.utils import create_shopify_log
+
+		items = frappe.get_all(
+			"Item",
+			filters={ITEM_PUBLISH_FIELD: 1, "disabled": 0, "has_variants": 0},
+			pluck="name",
+		)
+		enqueued = 0
+		errors = 0
+		for item_code in items:
+			try:
+				if frappe.db.exists("Ecommerce Item", {"erpnext_item_code": item_code, "integration": MODULE_NAME}):
+					continue
+				frappe.enqueue(
+					"ecommerce_integrations.shopify.product.upload_erpnext_item",
+					doc=frappe.get_doc("Item", item_code),
+					queue="long",
+				)
+				enqueued += 1
+			except Exception as e:
+				errors += 1
+				create_shopify_log(
+					status="Error",
+					message=f"Failed to queue {item_code} for Shopify sync: {e}",
+					method="sync_items_to_shopify",
+				)
+		msg = _("{0} item(s) queued for Shopify sync.").format(enqueued)
+		if errors:
+			msg += " " + _("{0} error(s) — check Ecommerce Integration Log.").format(errors)
+		return msg
+
+	@frappe.whitelist()
+	@connection.temp_shopify_session
+	def sync_price_to_shopify(self):
+		from shopify.resources import Variant
+
+		from ecommerce_integrations.shopify.utils import create_shopify_log
+
+		if not self.price_list:
+			frappe.throw(_("Please set a Price List in Shopify Setting first."))
+		synced_items = frappe.get_all(
+			"Ecommerce Item",
+			filters={"integration": MODULE_NAME, "has_variants": 0},
+			fields=["erpnext_item_code", "variant_id"],
+		)
+		updated = 0
+		errors = 0
+		for ecom in synced_items:
+			try:
+				price = self.get_item_price(ecom.erpnext_item_code)
+				if not price or not ecom.variant_id:
+					continue
+				variant = Variant.find(ecom.variant_id)
+				if not variant:
+					continue
+				variant.price = price
+				variant.save()
+				updated += 1
+			except Exception as e:
+				errors += 1
+				create_shopify_log(
+					status="Error",
+					message=f"Price sync failed for {ecom.erpnext_item_code}: {e}",
+					method="sync_price_to_shopify",
+				)
+		msg = _("{0} item price(s) synced to Shopify.").format(updated)
+		if errors:
+			msg += " " + _("{0} error(s) — check Ecommerce Integration Log.").format(errors)
+		return msg
+
 
 def setup_custom_fields():
 	custom_fields = {
 		"Item": [
 			dict(
-				fieldname=ITEM_SELLING_RATE_FIELD,
-				label="Shopify Selling Rate",
-				fieldtype="Currency",
+				fieldname=ITEM_PUBLISH_FIELD,
+				label="Publish on Website",
+				fieldtype="Check",
 				insert_after="standard_rate",
+				default=0,
 			)
 		],
 		"Customer": [
