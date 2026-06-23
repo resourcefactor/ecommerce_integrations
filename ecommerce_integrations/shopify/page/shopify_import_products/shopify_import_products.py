@@ -1,7 +1,9 @@
+import time
 from time import process_time
 
 import frappe
 from frappe.exceptions import UniqueValidationError
+from pyactiveresource.connection import ClientError
 from shopify.resources import Product
 
 from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item import ecommerce_item
@@ -126,6 +128,21 @@ def import_all_products():
 	)
 
 
+def _sync_with_retry(product, max_retries=3):
+	"""Sync a single product using pre-fetched dict, retrying on Shopify 429 rate limit."""
+	for attempt in range(max_retries):
+		try:
+			shopify_product = ShopifyProduct(product.id)
+			shopify_product.sync_product(product_dict=product.to_dict())
+			return
+		except ClientError as e:
+			if e.response.code == 429 and attempt < max_retries - 1:
+				retry_after = float(e.response.headers.get("retry-after", 2.0))
+				time.sleep(retry_after)
+			else:
+				raise
+
+
 def queue_sync_all_products(*args, **kwargs):
 	start_time = process_time()
 
@@ -147,8 +164,7 @@ def queue_sync_all_products(*args, **kwargs):
 					publish(f"Product {product.id} already synced. Skipping...")
 					continue
 
-				shopify_product = ShopifyProduct(product.id)
-				shopify_product.sync_product()
+				_sync_with_retry(product)
 
 				publish(f"✅ Synced Product {product.id}", synced=True)
 

@@ -116,7 +116,10 @@ def refresh_oauth_token(setting) -> str:
 			title=_("Invalid Authentication Method"),
 		)
 
-	setting.reload()
+	# Do NOT call setting.reload() here — it would discard in-memory user changes
+	# (e.g. enable_shopify=1) when called during validate(), causing the save to
+	# write the old DB value back. get_password() always reads from DB directly,
+	# so no reload is needed to get fresh credentials.
 
 	token_data = generate_oauth_token(
 		setting.shopify_url,
@@ -141,7 +144,9 @@ def refresh_oauth_token(setting) -> str:
 		update_modified=False,
 	)
 
-	setting.reload()
+	# Update only the expiry field in-memory so subsequent is_token_valid checks pass.
+	# A full reload would reset enable_shopify and other user changes.
+	setting.token_expires_at = get_datetime_str(expires_at)
 
 	return token_data["access_token"]
 

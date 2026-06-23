@@ -256,6 +256,81 @@ class ShopifySetting(SettingController):
 		)
 
 	@frappe.whitelist()
+	@connection.temp_shopify_session
+	def fetch_shopify_items_for_mapping(self):
+		"""Fetch all Shopify products and variants for CSV export + manual ERPNext mapping."""
+		from shopify.resources import Product
+
+		rows = []
+		collection = Product.find(limit=250)
+
+		while True:
+			for product in collection:
+				for variant in product.variants:
+					rows.append({
+						"shopify_product_id": str(product.id),
+						"product_title": product.title,
+						"variant_id": str(variant.id),
+						"variant_title": variant.title,
+						"sku": variant.sku or "",
+						"erpnext_item_code": "",
+					})
+			if collection.has_next_page():
+				collection = Product.find(from_=collection.next_page_url)
+			else:
+				break
+
+		return rows
+
+	@frappe.whitelist()
+	def import_shopify_item_mapping(self, csv_data):
+		"""Bulk-create Ecommerce Item records from a filled-in mapping CSV."""
+		import csv as csv_module
+		import io
+
+		from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item.ecommerce_item import (
+			is_synced,
+		)
+
+		created, skipped, errors = 0, 0, []
+		reader = csv_module.DictReader(io.StringIO(csv_data))
+
+		for row in reader:
+			erpnext_item_code = (row.get("ERPNext Item Code") or "").strip()
+			if not erpnext_item_code:
+				skipped += 1
+				continue
+
+			shopify_product_id = (row.get("Shopify Product ID") or "").strip()
+			variant_id = (row.get("Variant ID") or "").strip()
+			sku = (row.get("SKU") or "").strip() or None
+
+			if not frappe.db.exists("Item", erpnext_item_code):
+				errors.append(f"Item not found: {erpnext_item_code}")
+				continue
+
+			if is_synced(MODULE_NAME, shopify_product_id, variant_id):
+				skipped += 1
+				continue
+
+			try:
+				frappe.get_doc({
+					"doctype": "Ecommerce Item",
+					"integration": MODULE_NAME,
+					"erpnext_item_code": erpnext_item_code,
+					"integration_item_code": shopify_product_id,
+					"variant_id": variant_id,
+					"sku": sku,
+					"has_variants": 0,
+				}).insert(ignore_permissions=True)
+				created += 1
+			except Exception as e:
+				errors.append(f"{erpnext_item_code}: {str(e)}")
+
+		frappe.db.commit()
+		return {"created": created, "skipped": skipped, "errors": errors}
+
+	@frappe.whitelist()
 	def sync_items_to_shopify(self):
 		from ecommerce_integrations.shopify.utils import create_shopify_log
 

@@ -55,10 +55,11 @@ class ShopifyProduct:
 		)
 
 	@temp_shopify_session
-	def sync_product(self):
+	def sync_product(self, product_dict=None):
 		if not self.is_synced():
-			shopify_product = Product.find(self.product_id)
-			product_dict = shopify_product.to_dict()
+			if product_dict is None:
+				shopify_product = Product.find(self.product_id)
+				product_dict = shopify_product.to_dict()
 			self._make_item(product_dict)
 
 	def _make_item(self, product_dict):

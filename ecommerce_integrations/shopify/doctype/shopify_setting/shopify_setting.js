@@ -52,6 +52,56 @@ frappe.ui.form.on("Shopify Setting", {
 				},
 			});
 		});
+		frm.add_custom_button(__("Export Shopify Products"), function () {
+			frappe.show_alert({ message: __("Fetching products from Shopify..."), indicator: "blue" });
+			frappe.call({
+				doc: frm.doc,
+				method: "fetch_shopify_items_for_mapping",
+				callback: function (r) {
+					if (!r.message || !r.message.length) {
+						frappe.msgprint(__("No products found in Shopify."));
+						return;
+					}
+					const headers = ["Shopify Product ID", "Product Title", "Variant ID", "Variant Title", "SKU", "ERPNext Item Code"];
+					const csvContent = [headers, ...r.message.map(row => [
+						row.shopify_product_id, row.product_title, row.variant_id,
+						row.variant_title, row.sku, row.erpnext_item_code,
+					])].map(row => row.map(cell => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")).join("\n");
+
+					const blob = new Blob([csvContent], { type: "text/csv" });
+					const url = URL.createObjectURL(blob);
+					const a = document.createElement("a");
+					a.href = url; a.download = "shopify_products_mapping.csv"; a.click();
+					URL.revokeObjectURL(url);
+					frappe.show_alert({ message: __("{0} variants exported", [r.message.length]), indicator: "green" });
+				},
+			});
+		}, __("Shopify"));
+		frm.add_custom_button(__("Import Item Mapping"), function () {
+			const input = document.createElement("input");
+			input.type = "file";
+			input.accept = ".csv";
+			input.onchange = function () {
+				const reader = new FileReader();
+				reader.onload = function (e) {
+					frappe.call({
+						doc: frm.doc,
+						method: "import_shopify_item_mapping",
+						args: { csv_data: e.target.result },
+						callback: function (r) {
+							const res = r.message;
+							let msg = `<b>Created:</b> ${res.created}<br><b>Skipped:</b> ${res.skipped}`;
+							if (res.errors.length) {
+								msg += `<br><br><b>Errors (${res.errors.length}):</b><br>` + res.errors.slice(0, 20).join("<br>");
+							}
+							frappe.msgprint({ title: __("Import Result"), message: msg, indicator: res.errors.length ? "orange" : "green" });
+						},
+					});
+				};
+				reader.readAsText(input.files[0]);
+			};
+			input.click();
+		}, __("Shopify"));
 		frm.trigger("setup_queries");
 	},
 
