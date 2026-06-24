@@ -82,6 +82,54 @@ def get_inventory_levels_of_group_warehouse(warehouse: str, integration: str):
 	return data
 
 
+def get_inventory_levels_aggregated(location_warehouse_map: dict, integration: str) -> list[_dict]:
+	"""Aggregate stock across multiple ERPNext warehouses per Shopify location.
+
+	Args:
+		location_warehouse_map: {shopify_location_id: [warehouse1, warehouse2, ...]}
+		integration: integration name (e.g. "shopify")
+
+	Returns list of _dict with ecom_item, item_code, integration_item_code,
+	variant_id, actual_qty (summed), reserved_qty (summed), warehouse (= location_id).
+	"""
+	results = []
+
+	for location_id, warehouses in location_warehouse_map.items():
+		if not warehouses:
+			continue
+
+		EcommerceItem = DocType("Ecommerce Item")
+		Bin = DocType("Bin")
+
+		query = (
+			frappe.qb.from_(EcommerceItem)
+			.join(Bin)
+			.on(EcommerceItem.erpnext_item_code == Bin.item_code)
+			.select(
+				EcommerceItem.name.as_("ecom_item"),
+				Bin.item_code.as_("item_code"),
+				EcommerceItem.integration_item_code,
+				EcommerceItem.variant_id,
+				Sum(Bin.actual_qty).as_("actual_qty"),
+				Sum(Bin.reserved_qty).as_("reserved_qty"),
+			)
+			.where(
+				(Bin.warehouse.isin(warehouses))
+				& (EcommerceItem.integration == integration)
+			)
+			.groupby(EcommerceItem.erpnext_item_code)
+			.having(Max(Bin.modified) > Max(EcommerceItem.inventory_synced_on))
+		)
+
+		rows = query.run(as_dict=1)
+		for row in rows:
+			# reuse warehouse field to carry the shopify location_id
+			row.warehouse = location_id
+		results.extend(rows)
+
+	return results
+
+
 def update_inventory_sync_status(ecommerce_item, time=None):
 	"""Update `inventory_synced_on` timestamp to specified time or current time (if not specified).
 

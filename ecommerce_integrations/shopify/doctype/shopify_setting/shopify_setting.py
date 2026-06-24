@@ -230,21 +230,57 @@ class ShopifySetting(SettingController):
 			for location in locations:
 				self.append(
 					"shopify_warehouse_mapping",
-					{"shopify_location_id": location.id, "shopify_location_name": location.name},
+					{
+						"shopify_location_id": location.id,
+						"shopify_location_name": location.name,
+						"is_primary": 1,
+					},
 				)
 
 	def get_erpnext_warehouses(self) -> list[ERPNextWarehouse]:
-		return [wh_map.erpnext_warehouse for wh_map in self.shopify_warehouse_mapping]
+		return list({wh_map.erpnext_warehouse for wh_map in self.shopify_warehouse_mapping if wh_map.erpnext_warehouse})
+
+	def get_location_warehouse_map(self) -> dict[IntegrationWarehouse, list[ERPNextWarehouse]]:
+		"""Returns {shopify_location_id: [warehouse1, warehouse2, ...]} for inventory aggregation.
+
+		Multiple rows with the same location_id are combined into one list,
+		allowing stock from several ERPNext warehouses to be summed per Shopify location.
+		"""
+		result: dict[str, list[str]] = {}
+		for row in self.shopify_warehouse_mapping:
+			if not row.shopify_location_id or not row.erpnext_warehouse:
+				continue
+			result.setdefault(row.shopify_location_id, [])
+			if row.erpnext_warehouse not in result[row.shopify_location_id]:
+				result[row.shopify_location_id].append(row.erpnext_warehouse)
+		return result
 
 	def get_erpnext_to_integration_wh_mapping(self) -> dict[ERPNextWarehouse, IntegrationWarehouse]:
-		return {
-			wh_map.erpnext_warehouse: wh_map.shopify_location_id for wh_map in self.shopify_warehouse_mapping
-		}
+		"""Returns one primary ERPNext warehouse per Shopify location for order creation.
+
+		Uses rows marked is_primary=1; falls back to the first row per location
+		if no primary is set (backward compatible with single-row setups).
+		"""
+		seen: dict[str, str] = {}  # location_id → warehouse
+		for row in self.shopify_warehouse_mapping:
+			if not row.shopify_location_id or not row.erpnext_warehouse:
+				continue
+			loc = row.shopify_location_id
+			if loc not in seen or row.is_primary:
+				seen[loc] = row.erpnext_warehouse
+		# Return warehouse → location_id (original signature)
+		return {wh: loc for loc, wh in seen.items()}
 
 	def get_integration_to_erpnext_wh_mapping(self) -> dict[IntegrationWarehouse, ERPNextWarehouse]:
-		return {
-			wh_map.shopify_location_id: wh_map.erpnext_warehouse for wh_map in self.shopify_warehouse_mapping
-		}
+		"""Returns one primary ERPNext warehouse per Shopify location (for inbound mapping)."""
+		seen: dict[str, str] = {}  # location_id → warehouse
+		for row in self.shopify_warehouse_mapping:
+			if not row.shopify_location_id or not row.erpnext_warehouse:
+				continue
+			loc = row.shopify_location_id
+			if loc not in seen or row.is_primary:
+				seen[loc] = row.erpnext_warehouse
+		return seen
 
 	def get_item_price(self, item_code):
 		if not self.price_list:

@@ -7,7 +7,8 @@
  "field_order": [
   "shopify_location_id",
   "shopify_location_name",
-  "erpnext_warehouse"
+  "erpnext_warehouse",
+  "is_primary"
  ],
  "fields": [
   {
@@ -16,6 +17,13 @@
    "in_list_view": 1,
    "label": "ERPNext Warehouse",
    "options": "Warehouse"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_primary",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Primary (for Orders)"
   },
   {
    "fieldname": "shopify_location_id",

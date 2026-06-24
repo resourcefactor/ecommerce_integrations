@@ -6,7 +6,7 @@ from pyactiveresource.connection import ResourceNotFound
 from shopify.resources import InventoryLevel, Variant
 
 from ecommerce_integrations.controllers.inventory import (
-	get_inventory_levels,
+	get_inventory_levels_aggregated,
 	update_inventory_sync_status,
 )
 from ecommerce_integrations.controllers.scheduling import need_to_run
@@ -28,20 +28,20 @@ def update_inventory_on_shopify() -> None:
 	if not need_to_run(SETTING_DOCTYPE, "inventory_sync_frequency", "last_inventory_sync"):
 		return
 
-	warehous_map = setting.get_erpnext_to_integration_wh_mapping()
-	inventory_levels = get_inventory_levels(tuple(warehous_map.keys()), MODULE_NAME)
+	location_warehouse_map = setting.get_location_warehouse_map()
+	inventory_levels = get_inventory_levels_aggregated(location_warehouse_map, MODULE_NAME)
 
 	if inventory_levels:
-		upload_inventory_data_to_shopify(inventory_levels, warehous_map)
+		upload_inventory_data_to_shopify(inventory_levels)
 
 
 @temp_shopify_session
-def upload_inventory_data_to_shopify(inventory_levels, warehous_map) -> None:
+def upload_inventory_data_to_shopify(inventory_levels) -> None:
 	synced_on = now()
 
 	for inventory_sync_batch in create_batch(inventory_levels, 50):
 		for d in inventory_sync_batch:
-			d.shopify_location_id = warehous_map[d.warehouse]
+			d.shopify_location_id = d.warehouse  # warehouse field carries location_id from aggregated query
 
 			try:
 				variant = Variant.find(d.variant_id)
