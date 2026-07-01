@@ -1,7 +1,7 @@
 import frappe
 from frappe import _dict
 from frappe.query_builder import DocType
-from frappe.query_builder.functions import Max, Sum
+from frappe.query_builder.functions import Coalesce, Max, Sum
 from frappe.utils import now
 from frappe.utils.nestedset import get_descendants_of
 
@@ -118,7 +118,7 @@ def get_inventory_levels_aggregated(location_warehouse_map: dict, integration: s
 				& (EcommerceItem.integration == integration)
 			)
 			.groupby(EcommerceItem.erpnext_item_code)
-			.having(Max(Bin.modified) > Max(EcommerceItem.inventory_synced_on))
+			.having(Max(Bin.modified) > Coalesce(Max(EcommerceItem.inventory_synced_on), "1970-01-01 00:00:00"))
 		)
 
 		rows = query.run(as_dict=1)
