@@ -1,6 +1,6 @@
 import time
 
-from pyactiveresource.connection import ClientError
+from pyactiveresource.connection import ClientError, ResourceNotFound
 from shopify.resources import Product, Variant
 
 import frappe
@@ -648,10 +648,7 @@ def _apply_metafields(product_id, metafields: list) -> None:
 
 
 def sync_items_and_price_to_shopify() -> None:
-	"""Scheduled job: push title, description and price for all synced items.
-
-	Runs on the same interval as inventory sync (inventory_sync_frequency / last_item_sync).
-	"""
+	"""Scheduled trigger: enqueues the heavy sync work on the long queue (1500s timeout)."""
 	setting = frappe.get_doc(SETTING_DOCTYPE)
 
 	if not setting.is_enabled() or not setting.upload_erpnext_items:
@@ -660,13 +657,22 @@ def sync_items_and_price_to_shopify() -> None:
 	if not need_to_run(SETTING_DOCTYPE, "inventory_sync_frequency", "last_item_sync"):
 		return
 
-	_do_sync_items_and_price(setting)
+	frappe.enqueue(
+		_do_sync_items_and_price,
+		setting=setting,
+		queue="long",
+		timeout=1500,
+		job_id="shopify_sync_items_and_price",
+		deduplicate=True,
+	)
 
 
 def _fetch_product_with_retry(product_id: str, max_retries: int = 3):
 	for attempt in range(max_retries):
 		try:
 			return Product.find(product_id)
+		except ResourceNotFound:
+			return None
 		except ClientError as e:
 			if e.response.code == 429 and attempt < max_retries - 1:
 				retry_after = float(e.response.headers.get("retry-after", 2.0))
@@ -703,6 +709,7 @@ def _do_sync_items_and_price(setting) -> None:
 			item = frappe.get_doc("Item", ecom.erpnext_item_code)
 			shopify_product = _fetch_product_with_retry(ecom.integration_item_code)
 			if not shopify_product:
+				frappe.db.set_value("Ecommerce Item", ecom.name, "sync_status", "Not Found", update_modified=False)
 				continue
 
 			extra_variant_fields, metafields = map_erpnext_item_to_shopify(
@@ -720,9 +727,11 @@ def _do_sync_items_and_price(setting) -> None:
 
 			_sync_product_with_retry(shopify_product)
 			_apply_metafields(shopify_product.id, metafields)
+			frappe.db.set_value("Ecommerce Item", ecom.name, "sync_status", "Synced", update_modified=False)
 			updated += 1
 		except Exception as e:
 			errors += 1
+			frappe.db.set_value("Ecommerce Item", ecom.name, "sync_status", "Error", update_modified=False)
 			create_shopify_log(
 				status="Error",
 				message=f"Scheduled sync failed for {ecom.erpnext_item_code}: {e}",

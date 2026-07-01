@@ -130,12 +130,14 @@ def get_inventory_levels_aggregated(location_warehouse_map: dict, integration: s
 	return results
 
 
-def update_inventory_sync_status(ecommerce_item, time=None):
-	"""Update `inventory_synced_on` timestamp to specified time or current time (if not specified).
-
-	After updating inventory levels to any integration, the Ecommerce Item should know about when it was last updated.
-	"""
+def update_inventory_sync_status(ecommerce_item, time=None, status="Synced"):
+	"""Update `inventory_synced_on` timestamp and `sync_status` on Ecommerce Item."""
 	if time is None:
 		time = now()
 
-	frappe.db.set_value("Ecommerce Item", ecommerce_item, "inventory_synced_on", time)
+	frappe.db.set_value(
+		"Ecommerce Item",
+		ecommerce_item,
+		{"inventory_synced_on": time, "sync_status": status},
+		update_modified=False,
+	)

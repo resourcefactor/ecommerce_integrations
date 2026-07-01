@@ -2,7 +2,7 @@ from collections import Counter
 
 import frappe
 from frappe.utils import cint, create_batch, now
-from pyactiveresource.connection import ResourceNotFound
+from pyactiveresource.connection import ClientError, ResourceNotFound
 from shopify.resources import InventoryLevel, Variant
 
 from ecommerce_integrations.controllers.inventory import (
@@ -53,13 +53,23 @@ def upload_inventory_data_to_shopify(inventory_levels) -> None:
 					# shopify doesn't support fractional quantity
 					available=cint(d.actual_qty) - cint(d.reserved_qty),
 				)
-				update_inventory_sync_status(d.ecom_item, time=synced_on)
+				update_inventory_sync_status(d.ecom_item, time=synced_on, status="Synced")
 				d.status = "Success"
 			except ResourceNotFound:
-				# Variant or location is deleted, mark as last synced and ignore.
-				update_inventory_sync_status(d.ecom_item, time=synced_on)
+				# Variant or location deleted in Shopify — mark and skip.
+				update_inventory_sync_status(d.ecom_item, time=synced_on, status="Not Found")
 				d.status = "Not Found"
+			except ClientError as e:
+				if e.response.code == 422:
+					# Inventory tracking disabled for this item in Shopify.
+					update_inventory_sync_status(d.ecom_item, time=synced_on, status="Tracking Disabled")
+					d.status = "Tracking Disabled"
+				else:
+					frappe.db.set_value("Ecommerce Item", d.ecom_item, "sync_status", "Error", update_modified=False)
+					d.status = "Failed"
+					d.failure_reason = str(e)
 			except Exception as e:
+				frappe.db.set_value("Ecommerce Item", d.ecom_item, "sync_status", "Error", update_modified=False)
 				d.status = "Failed"
 				d.failure_reason = str(e)
 

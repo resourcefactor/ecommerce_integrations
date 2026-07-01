@@ -15,7 +15,8 @@
   "variant_id",
   "variant_of",
   "inventory_synced_on",
-  "item_synced_on"
+  "item_synced_on",
+  "sync_status"
  ],
  "fields": [
   {
@@ -91,6 +92,15 @@
    "fieldname": "item_synced_on",
    "fieldtype": "Datetime",
    "label": "Item Data Synced On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Sync Status",
+   "options": "\nSynced\nNot Found\nTracking Disabled\nError",
    "read_only": 1
   }
  ],
