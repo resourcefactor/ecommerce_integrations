@@ -1,3 +1,4 @@
+import time
 from collections import Counter
 
 import frappe
@@ -44,10 +45,10 @@ def upload_inventory_data_to_shopify(inventory_levels) -> None:
 			d.shopify_location_id = d.warehouse  # warehouse field carries location_id from aggregated query
 
 			try:
-				variant = Variant.find(d.variant_id)
+				variant = _find_variant_with_retry(d.variant_id)
 				inventory_id = variant.inventory_item_id
 
-				InventoryLevel.set(
+				_set_inventory_level_with_retry(
 					location_id=d.shopify_location_id,
 					inventory_item_id=inventory_id,
 					# shopify doesn't support fractional quantity
@@ -109,3 +110,34 @@ def _log_inventory_update_status(inventory_levels) -> None:
 	log_message = f"Updated {percent_successful * 100}% items\n\n" + log_message
 
 	create_shopify_log(method="update_inventory_on_shopify", status=status, message=log_message)
+
+
+def _find_variant_with_retry(variant_id: str, max_retries: int = 3):
+	for attempt in range(max_retries):
+		try:
+			return Variant.find(variant_id)
+		except ResourceNotFound:
+			raise
+		except ClientError as e:
+			if e.response.code == 429 and attempt < max_retries - 1:
+				retry_after = float(e.response.headers.get("retry-after", 2.0))
+				time.sleep(retry_after)
+			else:
+				raise
+
+
+def _set_inventory_level_with_retry(location_id, inventory_item_id, available, max_retries: int = 3) -> None:
+	for attempt in range(max_retries):
+		try:
+			InventoryLevel.set(
+				location_id=location_id,
+				inventory_item_id=inventory_item_id,
+				available=available,
+			)
+			return
+		except ClientError as e:
+			if e.response.code == 429 and attempt < max_retries - 1:
+				retry_after = float(e.response.headers.get("retry-after", 2.0))
+				time.sleep(retry_after)
+			else:
+				raise
