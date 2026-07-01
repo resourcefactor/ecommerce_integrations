@@ -1,3 +1,6 @@
+import time
+
+from pyactiveresource.connection import ClientError
 from shopify.resources import Product, Variant
 
 import frappe
@@ -660,6 +663,31 @@ def sync_items_and_price_to_shopify() -> None:
 	_do_sync_items_and_price(setting)
 
 
+def _fetch_product_with_retry(product_id: str, max_retries: int = 3):
+	for attempt in range(max_retries):
+		try:
+			return Product.find(product_id)
+		except ClientError as e:
+			if e.response.code == 429 and attempt < max_retries - 1:
+				retry_after = float(e.response.headers.get("retry-after", 2.0))
+				time.sleep(retry_after)
+			else:
+				raise
+
+
+def _sync_product_with_retry(shopify_product, max_retries: int = 3) -> None:
+	for attempt in range(max_retries):
+		try:
+			shopify_product.save()
+			return
+		except ClientError as e:
+			if e.response.code == 429 and attempt < max_retries - 1:
+				retry_after = float(e.response.headers.get("retry-after", 2.0))
+				time.sleep(retry_after)
+			else:
+				raise
+
+
 @temp_shopify_session
 def _do_sync_items_and_price(setting) -> None:
 	synced_items = frappe.get_all(
@@ -673,7 +701,7 @@ def _do_sync_items_and_price(setting) -> None:
 	for ecom in synced_items:
 		try:
 			item = frappe.get_doc("Item", ecom.erpnext_item_code)
-			shopify_product = Product.find(ecom.integration_item_code)
+			shopify_product = _fetch_product_with_retry(ecom.integration_item_code)
 			if not shopify_product:
 				continue
 
@@ -690,7 +718,7 @@ def _do_sync_items_and_price(setting) -> None:
 					for field, val in (extra_variant_fields or {}).items():
 						setattr(default_variant, field, val)
 
-			shopify_product.save()
+			_sync_product_with_retry(shopify_product)
 			_apply_metafields(shopify_product.id, metafields)
 			updated += 1
 		except Exception as e:
