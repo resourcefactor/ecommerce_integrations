@@ -727,11 +727,19 @@ def _do_sync_items_and_price(setting) -> None:
 
 			_sync_product_with_retry(shopify_product)
 			_apply_metafields(shopify_product.id, metafields)
-			frappe.db.set_value("Ecommerce Item", ecom.name, "sync_status", "Synced", update_modified=False)
+			frappe.db.set_value(
+				"Ecommerce Item", ecom.name,
+				{"sync_status": "Synced", "sync_error": ""},
+				update_modified=False,
+			)
 			updated += 1
 		except Exception as e:
 			errors += 1
-			frappe.db.set_value("Ecommerce Item", ecom.name, "sync_status", "Error", update_modified=False)
+			frappe.db.set_value(
+				"Ecommerce Item", ecom.name,
+				{"sync_status": "Error", "sync_error": str(e)[:500]},
+				update_modified=False,
+			)
 			create_shopify_log(
 				status="Error",
 				message=f"Scheduled sync failed for {ecom.erpnext_item_code}: {e}",

@@ -65,11 +65,19 @@ def upload_inventory_data_to_shopify(inventory_levels) -> None:
 					update_inventory_sync_status(d.ecom_item, time=synced_on, status="Tracking Disabled")
 					d.status = "Tracking Disabled"
 				else:
-					frappe.db.set_value("Ecommerce Item", d.ecom_item, "sync_status", "Error", update_modified=False)
+					frappe.db.set_value(
+						"Ecommerce Item", d.ecom_item,
+						{"sync_status": "Error", "sync_error": str(e)},
+						update_modified=False,
+					)
 					d.status = "Failed"
 					d.failure_reason = str(e)
 			except Exception as e:
-				frappe.db.set_value("Ecommerce Item", d.ecom_item, "sync_status", "Error", update_modified=False)
+				frappe.db.set_value(
+					"Ecommerce Item", d.ecom_item,
+					{"sync_status": "Error", "sync_error": str(e)},
+					update_modified=False,
+				)
 				d.status = "Failed"
 				d.failure_reason = str(e)
 

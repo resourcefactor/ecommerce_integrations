@@ -135,9 +135,7 @@ def update_inventory_sync_status(ecommerce_item, time=None, status="Synced"):
 	if time is None:
 		time = now()
 
-	frappe.db.set_value(
-		"Ecommerce Item",
-		ecommerce_item,
-		{"inventory_synced_on": time, "sync_status": status},
-		update_modified=False,
-	)
+	values = {"inventory_synced_on": time, "sync_status": status}
+	if status == "Synced":
+		values["sync_error"] = ""
+	frappe.db.set_value("Ecommerce Item", ecommerce_item, values, update_modified=False)

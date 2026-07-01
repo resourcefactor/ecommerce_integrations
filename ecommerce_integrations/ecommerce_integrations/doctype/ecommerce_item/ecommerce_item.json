@@ -16,7 +16,8 @@
   "variant_of",
   "inventory_synced_on",
   "item_synced_on",
-  "sync_status"
+  "sync_status",
+  "sync_error"
  ],
  "fields": [
   {
@@ -101,6 +102,12 @@
    "in_standard_filter": 1,
    "label": "Sync Status",
    "options": "\nSynced\nNot Found\nTracking Disabled\nError",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_error",
+   "fieldtype": "Small Text",
+   "label": "Sync Error",
    "read_only": 1
   }
  ],
