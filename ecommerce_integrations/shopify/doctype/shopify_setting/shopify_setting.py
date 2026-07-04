@@ -316,6 +316,19 @@ class ShopifySetting(SettingController):
 			else:
 				break
 
+		# Fill in erpnext_item_code for already-mapped variants
+		mapped = {
+			row.variant_id: row.erpnext_item_code
+			for row in frappe.get_all(
+				"Ecommerce Item",
+				filters={"integration": MODULE_NAME},
+				fields=["variant_id", "erpnext_item_code"],
+			)
+			if row.variant_id
+		}
+		for row in rows:
+			row["erpnext_item_code"] = mapped.get(row["variant_id"], "")
+
 		return rows
 
 	@frappe.whitelist()
