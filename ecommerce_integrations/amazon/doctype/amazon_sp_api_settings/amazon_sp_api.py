@@ -414,11 +414,9 @@ class ListingsItems(SPAPI):
 		included_data = included_data or ["summaries", "issues", "offers"]
 
 		append_to_base_uri = f"/{self.seller_id}/{sku}"
-		data = dict()
-		self.list_to_dict("marketplaceIds", marketplace_ids, data)
-		self.list_to_dict("includedData", included_data, data)
+		params = dict(marketplaceIds=",".join(marketplace_ids), includedData=",".join(included_data))
 
-		return self.make_request(method="GET", append_to_base_uri=append_to_base_uri, params=data)
+		return self.make_request(method="GET", append_to_base_uri=append_to_base_uri, params=params)
 
 	def put_listing_item(
 		self,

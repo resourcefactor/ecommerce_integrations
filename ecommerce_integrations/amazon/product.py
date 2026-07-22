@@ -18,6 +18,10 @@ def upload_erpnext_item(doc, method=None):
 	Publishes/updates a single Item on Amazon as a listing, gated by the
 	`Upload ERPNext Items to Amazon` setting and the item's own
 	`publish_on_amazon` checkbox + `amazon_product_type`.
+
+	`Amazon SP API Settings` is a regular doctype, not a Single (an account
+	can have multiple marketplace records) — publish to every record that
+	has `is_active` + `upload_erpnext_items` enabled.
 	"""
 	item = doc
 
@@ -33,11 +37,13 @@ def upload_erpnext_item(doc, method=None):
 	if not item.get(ITEM_PUBLISH_FIELD):
 		return
 
-	setting = frappe.get_single(SETTING_DOCTYPE)
-	if not setting.is_enabled() or not setting.upload_erpnext_items:
-		return
+	setting_names = frappe.get_all(
+		SETTING_DOCTYPE, filters={"is_active": 1, "upload_erpnext_items": 1}, pluck="name"
+	)
 
-	_publish_item(setting, item)
+	for setting_name in setting_names:
+		setting = frappe.get_doc(SETTING_DOCTYPE, setting_name)
+		_publish_item(setting, item)
 
 
 def publish_items_to_amazon(amz_setting_name: str) -> None:
@@ -114,7 +120,7 @@ def _publish_item(setting, item) -> None:
 		)
 
 
-def backfill_asins(amz_setting_name: str | None = None) -> dict:
+def backfill_asins(amz_setting_name: str) -> dict:
 	"""Fetch and store the real ASIN for listings still marked 'Pending ASIN'.
 
 	Amazon assigns the ASIN asynchronously after a listing submission is
@@ -128,10 +134,7 @@ def backfill_asins(amz_setting_name: str | None = None) -> dict:
 	real ASIN and sync_status is no longer 'Pending ASIN'.
 	"""
 	filters = {"integration": MODULE_NAME, "sync_status": "Pending ASIN"}
-	if amz_setting_name:
-		setting = frappe.get_doc(SETTING_DOCTYPE, amz_setting_name)
-	else:
-		setting = frappe.get_single(SETTING_DOCTYPE)
+	setting = frappe.get_doc(SETTING_DOCTYPE, amz_setting_name)
 
 	repo = AmazonRepository(setting)
 	listings_api = repo.get_listings_items_instance()
@@ -169,6 +172,84 @@ def backfill_asins(amz_setting_name: str | None = None) -> dict:
 	create_amazon_log(
 		method="ecommerce_integrations.amazon.product.backfill_asins",
 		status="Success" if results["errors"] == 0 else "Partial Success",
+		message=str(results),
+	)
+	return results
+
+
+@frappe.whitelist()
+def import_existing_amazon_mappings(mappings: list | str) -> dict:
+	"""Register items already published on Amazon, without publishing them again.
+
+	`mappings` is a list of dicts (or a JSON string of the same):
+	    [{"item_code": "ITEM-001", "sku": "ITEM-001", "asin": "B0EXAMPLE1",
+	      "product_type": "WEARABLE_COMPUTER"}, ...]
+
+	For each row, creates or updates an `Ecommerce Item` with sync_status=Synced
+	and the given ASIN — no Amazon API calls are made. Use this once to backfill
+	the ERPNext<->Amazon mapping for a catalog that predates this integration.
+	`item_code` must reference an existing Item; `asin` and `sku` are required.
+	`product_type`, if given, is written to the Item's Amazon Product Type field
+	so future stock/patch pushes for this item work without extra setup.
+	"""
+	import json as json_module
+
+	if isinstance(mappings, str):
+		mappings = json_module.loads(mappings)
+
+	results = {"created": 0, "updated": 0, "skipped": []}
+
+	for row in mappings:
+		item_code = row.get("item_code")
+		sku = row.get("sku") or item_code
+		asin = row.get("asin")
+
+		if not item_code or not asin:
+			results["skipped"].append({**row, "reason": "item_code and asin are required"})
+			continue
+
+		if not frappe.db.exists("Item", item_code):
+			results["skipped"].append({**row, "reason": "Item not found"})
+			continue
+
+		existing_name = frappe.db.get_value(
+			"Ecommerce Item", {"erpnext_item_code": item_code, "integration": MODULE_NAME}, "name"
+		)
+
+		values = {
+			"integration_item_code": asin,
+			"sku": sku,
+			"sync_status": "Synced",
+			"sync_error": "",
+			"item_synced_on": frappe.utils.now(),
+		}
+
+		if existing_name:
+			frappe.db.set_value("Ecommerce Item", existing_name, values, update_modified=False)
+			results["updated"] += 1
+		else:
+			ecom_item = frappe.get_doc(
+				{
+					"doctype": "Ecommerce Item",
+					"erpnext_item_code": item_code,
+					"integration": MODULE_NAME,
+					"has_variants": 0,
+					**values,
+				}
+			)
+			ecom_item.insert(ignore_permissions=True)
+			results["created"] += 1
+
+		item_updates = {ITEM_PUBLISH_FIELD: 1}
+		product_type = row.get("product_type")
+		if product_type:
+			item_updates[ITEM_PRODUCT_TYPE_FIELD] = product_type
+		frappe.db.set_value("Item", item_code, item_updates, update_modified=False)
+
+	frappe.db.commit()
+	create_amazon_log(
+		method="ecommerce_integrations.amazon.product.import_existing_amazon_mappings",
+		status="Success" if not results["skipped"] else "Partial Success",
 		message=str(results),
 	)
 	return results
