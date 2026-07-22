@@ -255,6 +255,41 @@ def import_existing_amazon_mappings(mappings: list | str) -> dict:
 	return results
 
 
+@frappe.whitelist()
+def import_existing_amazon_mappings_from_csv(file_path: str) -> dict:
+	"""Same as `import_existing_amazon_mappings`, reading rows from a CSV file.
+
+	Expected header row: item_code,sku,asin,product_type
+	`product_type` column is optional and may be left blank per row.
+
+	`file_path` may be a path on disk (bench console) or a Frappe File URL
+	such as `/private/files/amazon_mappings.csv` (when called from a File
+	uploaded via the UI/API).
+	"""
+	import csv
+	import os
+
+	if file_path.startswith("/private/files/") or file_path.startswith("/files/"):
+		file_path = frappe.utils.get_site_path(file_path.lstrip("/"))
+
+	if not os.path.exists(file_path):
+		frappe.throw(_("File not found: {0}").format(file_path))
+
+	mappings = []
+	with open(file_path, newline="", encoding="utf-8-sig") as f:
+		for row in csv.DictReader(f):
+			mappings.append(
+				{
+					"item_code": (row.get("item_code") or "").strip(),
+					"sku": (row.get("sku") or "").strip(),
+					"asin": (row.get("asin") or "").strip(),
+					"product_type": (row.get("product_type") or "").strip(),
+				}
+			)
+
+	return import_existing_amazon_mappings(mappings)
+
+
 def _build_listing_attributes(item, price, marketplace_id, currency="USD") -> dict:
 	"""Minimal attribute set built only from fields already mandatory/available on Item.
 

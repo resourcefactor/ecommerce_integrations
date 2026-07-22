@@ -4,15 +4,14 @@
 from collections import Counter
 
 import frappe
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Coalesce, Max, Sum
 from frappe.utils import cint, create_batch, now
 
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_repository import AmazonRepository
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api import SPAPIError
 from ecommerce_integrations.amazon.utils import MODULE_NAME, SETTING_DOCTYPE, create_amazon_log
-from ecommerce_integrations.controllers.inventory import (
-	get_inventory_levels_aggregated,
-	update_inventory_sync_status,
-)
+from ecommerce_integrations.controllers.inventory import update_inventory_sync_status
 from ecommerce_integrations.controllers.scheduling import need_to_run
 
 FULFILLMENT_CHANNEL_CODE = "DEFAULT"  # seller-fulfilled; Amazon FBA listings ignore this feed
@@ -39,16 +38,56 @@ def update_inventory_on_amazon() -> None:
 
 		# single synthetic group: Amazon has no per-location concept for
 		# seller-fulfilled listings, so all configured warehouses fold into one qty.
-		inventory_levels = get_inventory_levels_aggregated({"amazon": warehouses}, MODULE_NAME)
+		inventory_levels = get_amazon_inventory_and_price_changes(warehouses, setting.price_list)
 
 		if inventory_levels:
 			upload_inventory_data_to_amazon(setting, inventory_levels)
+
+
+def get_amazon_inventory_and_price_changes(warehouses: list[str], price_list: str | None) -> list:
+	"""Like `controllers.inventory.get_inventory_levels_aggregated`, but for Amazon
+	specifically: also triggers on a price-only change (no stock movement), since
+	Amazon listings also carry price and that must stay in sync too. Kept local to
+	Amazon rather than changing the shared Shopify/Amazon stock-aggregation helper.
+	"""
+	EcommerceItem = DocType("Ecommerce Item")
+	Bin = DocType("Bin")
+	ItemPrice = DocType("Item Price")
+
+	query = (
+		frappe.qb.from_(EcommerceItem)
+		.join(Bin)
+		.on(EcommerceItem.erpnext_item_code == Bin.item_code)
+		.left_join(ItemPrice)
+		.on(
+			(ItemPrice.item_code == EcommerceItem.erpnext_item_code)
+			& (ItemPrice.price_list == price_list)
+			& (ItemPrice.selling == 1)
+		)
+		.select(
+			EcommerceItem.name.as_("ecom_item"),
+			Bin.item_code.as_("item_code"),
+			EcommerceItem.integration_item_code,
+			EcommerceItem.variant_id,
+			Sum(Bin.actual_qty).as_("actual_qty"),
+			Sum(Bin.reserved_qty).as_("reserved_qty"),
+		)
+		.where((Bin.warehouse.isin(warehouses)) & (EcommerceItem.integration == MODULE_NAME))
+		.groupby(EcommerceItem.erpnext_item_code)
+		.having(
+			(Max(Bin.modified) > Coalesce(Max(EcommerceItem.inventory_synced_on), "1970-01-01 00:00:00"))
+			| (Max(ItemPrice.modified) > Coalesce(Max(EcommerceItem.inventory_synced_on), "1970-01-01 00:00:00"))
+		)
+	)
+
+	return query.run(as_dict=1)
 
 
 def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 	repo = AmazonRepository(setting)
 	listings_api = repo.get_listings_items_instance()
 	synced_on = now()
+	currency = frappe.db.get_value("Price List", setting.price_list, "currency") or "USD"
 
 	for inventory_sync_batch in create_batch(inventory_levels, 50):
 		for d in inventory_sync_batch:
@@ -63,22 +102,35 @@ def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 						error_description=f"Item {d.item_code} has no Amazon Product Type set.",
 					)
 
-				listings_api.patch_listing_item(
-					sku=sku,
-					product_type=product_type,
-					patches=[
+				patches = [
+					{
+						"op": "replace",
+						"path": "/attributes/fulfillment_availability",
+						"value": [
+							{
+								"fulfillment_channel_code": FULFILLMENT_CHANNEL_CODE,
+								"quantity": available_qty,
+							}
+						],
+					}
+				]
+
+				price = setting.get_item_price(d.item_code)
+				if price:
+					patches.append(
 						{
 							"op": "replace",
-							"path": "/attributes/fulfillment_availability",
+							"path": "/attributes/purchasable_offer",
 							"value": [
 								{
-									"fulfillment_channel_code": FULFILLMENT_CHANNEL_CODE,
-									"quantity": available_qty,
+									"currency": currency,
+									"our_price": [{"schedule": [{"value_with_tax": price}]}],
 								}
 							],
 						}
-					],
-				)
+					)
+
+				listings_api.patch_listing_item(sku=sku, product_type=product_type, patches=patches)
 				update_inventory_sync_status(d.ecom_item, time=synced_on, status="Synced")
 				d.status = "Success"
 			except SPAPIError as e:
