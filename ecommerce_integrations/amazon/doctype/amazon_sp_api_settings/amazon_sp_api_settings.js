@@ -14,7 +14,69 @@ frappe.ui.form.on("Amazon SP API Settings", {
 			frm.add_custom_button(__("Import Existing Amazon Mappings (CSV)"), () => {
 				frm.trigger("import_amazon_mappings_csv");
 			});
+			frm.add_custom_button(__("Check Listing Status"), () => {
+				frm.trigger("check_amazon_listing_status");
+			});
 		}
+	},
+
+	check_amazon_listing_status(frm) {
+		frappe.call({
+			method: "ecommerce_integrations.amazon.product.check_amazon_listing_status",
+			args: { amz_setting_name: frm.docname },
+			freeze: true,
+			freeze_message: __("Checking listings on Amazon…"),
+			callback: (r) => {
+				if (r.exc) return;
+				const rows = r.message || [];
+				if (!rows.length) {
+					frappe.msgprint(__("No published items found to check."));
+					return;
+				}
+
+				let hasProblem = false;
+				const rows_html = rows
+					.map((row) => {
+						if (row.error) {
+							hasProblem = true;
+							return `<tr><td>${row.item_code}</td><td>${row.sku}</td><td>${row.asin || ""}</td>
+								<td colspan="2" style="color:#c0392b">${__("API Error")}: ${row.error}</td></tr>`;
+						}
+						const status = (row.status || []).join(", ") || "-";
+						const errors = row.errors || [];
+						const warnings = row.warnings || [];
+						if (errors.length || row.suppressed) hasProblem = true;
+						const errText = errors.length
+							? `<span style="color:#c0392b">${errors.join("<br>")}</span>`
+							: "";
+						const warnText = warnings.length
+							? `<span style="color:#b58900">${warnings.join("<br>")}</span>`
+							: "";
+						return `<tr>
+							<td>${row.item_code}</td>
+							<td>${row.sku}</td>
+							<td>${row.asin || ""}</td>
+							<td>${status}${row.suppressed ? ' <b style="color:#c0392b">(SUPPRESSED)</b>' : ""}</td>
+							<td>${errText}${errText && warnText ? "<br>" : ""}${warnText}</td>
+						</tr>`;
+					})
+					.join("");
+
+				const html = `<div style="max-height:400px;overflow:auto">
+					<table class="table table-bordered">
+						<thead><tr><th>${__("Item")}</th><th>${__("SKU")}</th><th>${__("ASIN")}</th>
+						<th>${__("Status")}</th><th>${__("Issues")}</th></tr></thead>
+						<tbody>${rows_html}</tbody>
+					</table></div>`;
+
+				frappe.msgprint({
+					title: __("Amazon Listing Status ({0} checked)", [rows.length]),
+					message: html,
+					wide: true,
+					indicator: hasProblem ? "orange" : "green",
+				});
+			},
+		});
 	},
 
 	import_amazon_mappings_csv(frm) {

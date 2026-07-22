@@ -290,6 +290,69 @@ def import_existing_amazon_mappings_from_csv(file_path: str) -> dict:
 	return import_existing_amazon_mappings(mappings)
 
 
+@frappe.whitelist()
+def check_amazon_listing_status(amz_setting_name: str, item_codes: list | str | None = None) -> list:
+	"""Validate published listings against live Amazon data — not just ERP's own
+	sync_status. A listing can show sync_status=Synced/Pending ASIN in ERP while
+	Amazon itself reports blocking issues (e.g. suppressed for missing GPSR info)
+	that only surface via a live GET call.
+
+	`item_codes`: optional list (or JSON string) of Item codes to check; if
+	omitted, checks every Item with `publish_on_amazon` = 1.
+
+	Returns a list of dicts: item_code, sku, asin, status (Amazon's DISCOVERABLE/
+	SEARCHABLE/BUYABLE flags), errors (blocking issues), warnings, or a top-level
+	`error` key if the SP-API call itself failed for that SKU.
+	"""
+	import json as json_module
+
+	if isinstance(item_codes, str):
+		item_codes = json_module.loads(item_codes)
+
+	filters = {"integration": MODULE_NAME}
+	if item_codes:
+		filters["erpnext_item_code"] = ["in", item_codes]
+	else:
+		filters["erpnext_item_code"] = ["in", frappe.get_all("Item", {ITEM_PUBLISH_FIELD: 1}, pluck="name")]
+
+	ecom_items = frappe.get_all(
+		"Ecommerce Item", filters=filters, fields=["erpnext_item_code", "sku", "integration_item_code"]
+	)
+
+	setting = frappe.get_doc(SETTING_DOCTYPE, amz_setting_name)
+	repo = AmazonRepository(setting)
+	listings_api = repo.get_listings_items_instance()
+
+	results = []
+	for row in ecom_items:
+		entry = {"item_code": row.erpnext_item_code, "sku": row.sku, "asin": row.integration_item_code}
+		try:
+			data = listings_api.get_listing_item(sku=row.sku, included_data=["summaries", "issues"])
+			summaries = data.get("summaries") or []
+			issues = data.get("issues") or []
+
+			entry["status"] = summaries[0].get("status") if summaries else []
+			entry["asin"] = summaries[0].get("asin") if summaries else row.integration_item_code
+			entry["errors"] = [i["message"] for i in issues if i.get("severity") == "ERROR"]
+			entry["warnings"] = [i["message"] for i in issues if i.get("severity") == "WARNING"]
+			entry["suppressed"] = any(
+				a.get("action") == "LISTING_SUPPRESSED"
+				for i in issues
+				for a in (i.get("enforcements", {}).get("actions") or [])
+			)
+		except SPAPIError as e:
+			entry["error"] = f"{e.error}: {e.error_description}"
+
+		results.append(entry)
+
+	create_amazon_log(
+		method="ecommerce_integrations.amazon.product.check_amazon_listing_status",
+		status="Success",
+		message=f"Checked {len(results)} listing(s).",
+	)
+	return results
+
+
 def _build_listing_attributes(item, price, marketplace_id, currency="USD") -> dict:
 	"""Minimal attribute set built only from fields already mandatory/available on Item.
 
