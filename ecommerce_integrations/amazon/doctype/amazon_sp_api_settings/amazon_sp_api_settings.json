@@ -12,6 +12,7 @@
   "column_break_1",
   "client_id",
   "client_secret",
+  "seller_id",
   "section_break_1",
   "aws_access_key",
   "aws_secret_key",
@@ -37,7 +38,18 @@
   "column_break_4",
   "enable_sync",
   "max_retry_limit",
-  "is_old_data_migrated"
+  "is_old_data_migrated",
+  "publishing_section",
+  "upload_erpnext_items",
+  "publish_items",
+  "backfill_asins",
+  "column_break_5",
+  "update_erpnext_stock_levels_to_amazon",
+  "inventory_sync_frequency",
+  "last_item_sync",
+  "last_inventory_sync",
+  "amazon_warehouse_mapping_section",
+  "amazon_warehouse_mapping"
  ],
  "fields": [
   {
@@ -86,6 +98,12 @@
    "in_list_view": 1,
    "label": "Client Secret",
    "reqd": 1
+  },
+  {
+   "description": "Merchant/Selling-Partner ID from Seller Central (Account Info). Required to publish listings or update stock via the Listings Items API.",
+   "fieldname": "seller_id",
+   "fieldtype": "Data",
+   "label": "Seller ID"
   },
   {
    "collapsible": 1,
@@ -254,6 +272,80 @@
    "fieldname": "create_item_if_not_exists",
    "fieldtype": "Check",
    "label": "Create Item If Not Exists"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "publishing_section",
+   "fieldtype": "Section Break",
+   "label": "Publishing"
+  },
+  {
+   "default": "0",
+   "description": "Automatically publish new/updated Items (that have 'Publish on Amazon' checked and Amazon Product Type set) as listings on Amazon.",
+   "fieldname": "upload_erpnext_items",
+   "fieldtype": "Check",
+   "label": "Upload ERPNext Items to Amazon"
+  },
+  {
+   "depends_on": "eval: !doc.__islocal && doc.is_active",
+   "description": "Publish/update all eligible Items now (Publish on Amazon checked, Amazon Product Type set).",
+   "fieldname": "publish_items",
+   "fieldtype": "Button",
+   "label": "Publish Items Now",
+   "options": "publish_items_now"
+  },
+  {
+   "depends_on": "eval: !doc.__islocal && doc.is_active",
+   "description": "Check Amazon for ASINs assigned to listings still showing 'Pending ASIN'.",
+   "fieldname": "backfill_asins",
+   "fieldtype": "Button",
+   "label": "Backfill ASINs Now",
+   "options": "backfill_asins_now"
+  },
+  {
+   "fieldname": "column_break_5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "update_erpnext_stock_levels_to_amazon",
+   "fieldtype": "Check",
+   "label": "Update ERPNext Stock Levels to Amazon"
+  },
+  {
+   "default": "60",
+   "depends_on": "eval:doc.update_erpnext_stock_levels_to_amazon",
+   "fieldname": "inventory_sync_frequency",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Frequency (In Minutes)",
+   "mandatory_depends_on": "eval:doc.update_erpnext_stock_levels_to_amazon",
+   "options": "5\n10\n15\n30\n60"
+  },
+  {
+   "fieldname": "last_item_sync",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Last Item Sync",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_inventory_sync",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Last Inventory Sync",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amazon_warehouse_mapping_section",
+   "fieldtype": "Section Break",
+   "label": "Warehouses For Stock Merge"
+  },
+  {
+   "description": "Stock from all warehouses listed here is summed (Actual Qty minus Reserved Qty) into a single available quantity per Item, pushed to Amazon as one nationwide stock level.",
+   "fieldname": "amazon_warehouse_mapping",
+   "fieldtype": "Table",
+   "label": "Warehouses",
+   "options": "Amazon Warehouse Mapping"
   }
  ],
  "links": [],

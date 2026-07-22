@@ -134,6 +134,64 @@ class AmazonSPAPISettings(Document):
 		else:
 			frappe.msgprint(_("Please enable the Amazon SP API Settings {0}.").format(frappe.bold(self.name)))
 
+	def is_enabled(self) -> bool:
+		return bool(self.is_active)
+
+	def get_merged_warehouses(self) -> list[str]:
+		"""ERPNext warehouses whose stock is summed into one Amazon quantity per item."""
+		return list({row.erpnext_warehouse for row in self.amazon_warehouse_mapping if row.erpnext_warehouse})
+
+	def get_item_price(self, item_code):
+		if not self.price_list:
+			return None
+		return frappe.db.get_value(
+			"Item Price",
+			{"item_code": item_code, "price_list": self.price_list, "selling": 1},
+			"price_list_rate",
+		)
+
+	@frappe.whitelist()
+	def publish_items_now(self):
+		from ecommerce_integrations.amazon.product import publish_items_to_amazon
+
+		if self.is_active != 1:
+			frappe.msgprint(_("Please enable the Amazon SP API Settings {0}.").format(frappe.bold(self.name)))
+			return
+
+		job_name = f"Publish Amazon Items - {self.name}"
+		if frappe.db.get_all("RQ Job", {"job_name": job_name, "status": ["in", ["queued", "started"]]}):
+			return frappe.msgprint(_("Items are currently being published in the background."))
+
+		frappe.enqueue(
+			job_name=job_name,
+			method=publish_items_to_amazon,
+			amz_setting_name=self.name,
+			timeout=4000,
+			now=frappe.flags.in_test,
+		)
+		frappe.msgprint(_("Items will be published to Amazon in the background."))
+
+	@frappe.whitelist()
+	def backfill_asins_now(self):
+		from ecommerce_integrations.amazon.product import backfill_asins
+
+		if self.is_active != 1:
+			frappe.msgprint(_("Please enable the Amazon SP API Settings {0}.").format(frappe.bold(self.name)))
+			return
+
+		job_name = f"Backfill Amazon ASINs - {self.name}"
+		if frappe.db.get_all("RQ Job", {"job_name": job_name, "status": ["in", ["queued", "started"]]}):
+			return frappe.msgprint(_("ASIN backfill is already running in the background."))
+
+		frappe.enqueue(
+			job_name=job_name,
+			method=backfill_asins,
+			amz_setting_name=self.name,
+			timeout=1500,
+			now=frappe.flags.in_test,
+		)
+		frappe.msgprint(_("Checking Amazon for assigned ASINs in the background."))
+
 
 # Called via a hook in every hour.
 def schedule_get_order_details():
@@ -151,6 +209,21 @@ def schedule_get_order_details():
 		get_orders(amz_setting_name=amz_setting.name, created_after=amz_setting.after_date)
 
 
+# Called via a hook every hour — checks Amazon for ASINs assigned to
+# recently-published listings that were still "Pending ASIN".
+def schedule_backfill_asins():
+	from ecommerce_integrations.amazon.product import backfill_asins
+
+	amz_settings = frappe.get_all(
+		"Amazon SP API Settings",
+		filters={"is_active": 1, "upload_erpnext_items": 1},
+		pluck="name",
+	)
+
+	for amz_setting_name in amz_settings:
+		backfill_asins(amz_setting_name=amz_setting_name)
+
+
 def setup_custom_fields():
 	custom_fields = {
 		"Sales Order": [
@@ -162,6 +235,23 @@ def setup_custom_fields():
 				read_only=1,
 				print_hide=1,
 			)
+		],
+		"Item": [
+			dict(
+				fieldname="publish_on_amazon",
+				label="Publish on Amazon",
+				fieldtype="Check",
+				insert_after="item_group",
+				default="0",
+			),
+			dict(
+				fieldname="amazon_product_type",
+				label="Amazon Product Type",
+				fieldtype="Data",
+				insert_after="publish_on_amazon",
+				depends_on="eval:doc.publish_on_amazon",
+				description="Amazon product type/category code (from Amazon's Product Type taxonomy) required to publish this item as a listing.",
+			),
 		],
 	}
 

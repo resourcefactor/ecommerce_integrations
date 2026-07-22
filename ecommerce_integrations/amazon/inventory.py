@@ -1,0 +1,127 @@
+# Copyright (c) 2026, Frappe and contributors
+# For license information, please see LICENSE
+
+from collections import Counter
+
+import frappe
+from frappe.utils import cint, create_batch, now
+
+from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_repository import AmazonRepository
+from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api import SPAPIError
+from ecommerce_integrations.amazon.utils import MODULE_NAME, SETTING_DOCTYPE, create_amazon_log
+from ecommerce_integrations.controllers.inventory import (
+	get_inventory_levels_aggregated,
+	update_inventory_sync_status,
+)
+from ecommerce_integrations.controllers.scheduling import need_to_run
+
+FULFILLMENT_CHANNEL_CODE = "DEFAULT"  # seller-fulfilled; Amazon FBA listings ignore this feed
+
+
+def update_inventory_on_amazon() -> None:
+	"""Merge stock across the warehouses configured in `Amazon Warehouse Mapping`
+	and push one nationwide available quantity per Item to Amazon.
+
+	Called by scheduler on the configured interval.
+	"""
+	for setting_name in frappe.get_all(SETTING_DOCTYPE, {"is_active": 1}, pluck="name"):
+		setting = frappe.get_doc(SETTING_DOCTYPE, setting_name)
+
+		if not setting.is_enabled() or not setting.update_erpnext_stock_levels_to_amazon:
+			continue
+
+		if not need_to_run(setting_name, "inventory_sync_frequency", "last_inventory_sync"):
+			continue
+
+		warehouses = setting.get_merged_warehouses()
+		if not warehouses:
+			continue
+
+		# single synthetic group: Amazon has no per-location concept for
+		# seller-fulfilled listings, so all configured warehouses fold into one qty.
+		inventory_levels = get_inventory_levels_aggregated({"amazon": warehouses}, MODULE_NAME)
+
+		if inventory_levels:
+			upload_inventory_data_to_amazon(setting, inventory_levels)
+
+
+def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
+	repo = AmazonRepository(setting)
+	listings_api = repo.get_listings_items_instance()
+	synced_on = now()
+
+	for inventory_sync_batch in create_batch(inventory_levels, 50):
+		for d in inventory_sync_batch:
+			available_qty = max(cint(d.actual_qty) - cint(d.reserved_qty), 0)
+			sku = d.integration_item_code or d.item_code
+
+			try:
+				product_type = frappe.db.get_value("Item", d.item_code, "amazon_product_type")
+				if not product_type:
+					raise SPAPIError(
+						error="missing_product_type",
+						error_description=f"Item {d.item_code} has no Amazon Product Type set.",
+					)
+
+				listings_api.patch_listing_item(
+					sku=sku,
+					product_type=product_type,
+					patches=[
+						{
+							"op": "replace",
+							"path": "/attributes/fulfillment_availability",
+							"value": [
+								{
+									"fulfillment_channel_code": FULFILLMENT_CHANNEL_CODE,
+									"quantity": available_qty,
+								}
+							],
+						}
+					],
+				)
+				update_inventory_sync_status(d.ecom_item, time=synced_on, status="Synced")
+				d.status = "Success"
+			except SPAPIError as e:
+				frappe.db.set_value(
+					"Ecommerce Item",
+					d.ecom_item,
+					{"sync_status": "Error", "sync_error": f"{e.error}: {e.error_description}"},
+					update_modified=False,
+				)
+				d.status = "Failed"
+				d.failure_reason = f"{e.error}: {e.error_description}"
+			except Exception as e:
+				frappe.db.set_value(
+					"Ecommerce Item",
+					d.ecom_item,
+					{"sync_status": "Error", "sync_error": str(e)},
+					update_modified=False,
+				)
+				d.status = "Failed"
+				d.failure_reason = str(e)
+
+			frappe.db.commit()
+
+		_log_inventory_update_status(inventory_sync_batch)
+
+
+def _log_inventory_update_status(inventory_levels) -> None:
+	log_message = "sku,item_code,status,failure_reason\n"
+	log_message += "\n".join(
+		f"{d.integration_item_code or d.item_code},{d.item_code},{d.status},{d.failure_reason or ''}"
+		for d in inventory_levels
+	)
+
+	stats = Counter([d.status for d in inventory_levels])
+	percent_successful = stats["Success"] / len(inventory_levels)
+
+	if percent_successful == 0:
+		status = "Failed"
+	elif percent_successful < 1:
+		status = "Partial Success"
+	else:
+		status = "Success"
+
+	log_message = f"Updated {percent_successful * 100}% items\n\n" + log_message
+
+	create_amazon_log(method="update_inventory_on_amazon", status=status, message=log_message)

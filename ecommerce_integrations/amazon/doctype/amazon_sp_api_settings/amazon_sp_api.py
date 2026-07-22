@@ -16,6 +16,7 @@ __all__ = [
 	"Finances",
 	"Orders",
 	"CatalogItems",
+	"ListingsItems",
 ]
 
 
@@ -222,6 +223,7 @@ class SPAPI:
 		aws_access_key: str,
 		aws_secret_key: str,
 		country_code: str = "US",
+		seller_id: str = "",
 	) -> None:
 		self.iam_arn = iam_arn
 		self.client_id = client_id
@@ -230,6 +232,7 @@ class SPAPI:
 		self.aws_access_key = aws_access_key
 		self.aws_secret_key = aws_secret_key
 		self.country_code = country_code
+		self.seller_id = seller_id
 		self.region, self.endpoint, self.marketplace_id = Util.get_marketplace_data(country_code)
 
 	def get_access_token(self) -> str:
@@ -247,31 +250,12 @@ class SPAPI:
 		exception = SPAPIError(error=result.get("error"), error_description=result.get("error_description"))
 		raise exception
 
-	def get_auth(self) -> AWSSigV4:
-		try:
-			client = boto3.client(
-				"sts",
-				aws_access_key_id=self.aws_access_key,
-				aws_secret_access_key=self.aws_secret_key,
-				region_name=self.region,
-			)
-
-			response = client.assume_role(RoleArn=self.iam_arn, RoleSessionName="SellingPartnerAPI")
-
-			credentials = response["Credentials"]
-			access_key_id = credentials["AccessKeyId"]
-			secret_access_key = credentials["SecretAccessKey"]
-			session_token = credentials["SessionToken"]
-
-			return AWSSigV4(
-				service="execute-api",
-				aws_access_key_id=access_key_id,
-				aws_secret_access_key=secret_access_key,
-				aws_session_token=session_token,
-				region=self.region,
-			)
-		except Exception as e:
-			raise SPAPIError(error="invalid_aws_credentials", error_description=e)
+	def get_auth(self) -> None:
+		# Amazon removed the SigV4/IAM authorization requirement for SP-API in Oct 2023;
+		# only the x-amz-access-token header (see get_headers) is required now. Apps
+		# registered via the Solution Provider Portal have no IAM ARN to assume, so
+		# there is nothing to sign with here.
+		return None
 
 	def get_headers(self) -> dict:
 		return {"x-amz-access-token": self.get_access_token()}
@@ -282,6 +266,7 @@ class SPAPI:
 		append_to_base_uri: str = "",
 		params: dict | None = None,
 		data: dict | None = None,
+		json_body: dict | None = None,
 	) -> dict:
 		if isinstance(params, dict):
 			params = Util.remove_empty(params)
@@ -290,12 +275,17 @@ class SPAPI:
 
 		url = self.endpoint + self.BASE_URI + append_to_base_uri
 
+		headers = self.get_headers()
+		if json_body is not None:
+			headers["Content-Type"] = "application/json"
+
 		response = request(
 			method=method,
 			url=url,
 			params=params,
 			data=data,
-			headers=self.get_headers(),
+			json=json_body,
+			headers=headers,
 			auth=self.get_auth(),
 		)
 		return response.json()
@@ -398,6 +388,93 @@ class CatalogItems(SPAPI):
 		data = dict(MarketplaceId=marketplace_id)
 
 		return self.make_request(append_to_base_uri=append_to_base_uri, params=data)
+
+
+class ListingsItems(SPAPI):
+	"""Amazon Listings Items API — create/update/read seller listings.
+
+	https://developer-docs.amazon.com/sp-api/docs/listings-items-api-v2021-08-01-reference
+	Requires `seller_id` (the merchant/selling-partner ID from Seller Central,
+	not the LWA client_id) to be set on the instance.
+	"""
+
+	BASE_URI = "/listings/2021-08-01/items"
+
+	def get_listing_item(
+		self,
+		sku: str,
+		marketplace_ids: list | None = None,
+		included_data: list | None = None,
+	) -> dict:
+		"""Returns details, including issues, for an existing listing by SKU."""
+		if not self.seller_id:
+			raise SPAPIError(error="missing_seller_id", error_description="seller_id is required for Listings Items API")
+
+		marketplace_ids = marketplace_ids or [self.marketplace_id]
+		included_data = included_data or ["summaries", "issues", "offers"]
+
+		append_to_base_uri = f"/{self.seller_id}/{sku}"
+		data = dict()
+		self.list_to_dict("marketplaceIds", marketplace_ids, data)
+		self.list_to_dict("includedData", included_data, data)
+
+		return self.make_request(method="GET", append_to_base_uri=append_to_base_uri, params=data)
+
+	def put_listing_item(
+		self,
+		sku: str,
+		product_type: str,
+		attributes: dict,
+		marketplace_ids: list | None = None,
+	) -> dict:
+		"""Creates or fully replaces a listing for the given SKU.
+
+		`attributes` is the SP-API attributes object for `product_type`
+		(e.g. {"item_name": [...], "brand": [...], ...}) — Amazon validates
+		it against that product type's schema server-side.
+		"""
+		if not self.seller_id:
+			raise SPAPIError(error="missing_seller_id", error_description="seller_id is required for Listings Items API")
+
+		marketplace_ids = marketplace_ids or [self.marketplace_id]
+		append_to_base_uri = f"/{self.seller_id}/{sku}"
+		params = dict(marketplaceIds=",".join(marketplace_ids))
+		body = dict(productType=product_type, requirements="LISTING", attributes=attributes)
+
+		return self.make_request(method="PUT", append_to_base_uri=append_to_base_uri, params=params, json_body=body)
+
+	def patch_listing_item(
+		self,
+		sku: str,
+		product_type: str,
+		patches: list,
+		marketplace_ids: list | None = None,
+	) -> dict:
+		"""Partially updates a listing (e.g. just price/quantity) via JSON Patch ops.
+
+		`patches` example: [{"op": "replace", "path": "/attributes/fulfillment_availability",
+		"value": [{"fulfillment_channel_code": "DEFAULT", "quantity": 10}]}]
+		"""
+		if not self.seller_id:
+			raise SPAPIError(error="missing_seller_id", error_description="seller_id is required for Listings Items API")
+
+		marketplace_ids = marketplace_ids or [self.marketplace_id]
+		append_to_base_uri = f"/{self.seller_id}/{sku}"
+		params = dict(marketplaceIds=",".join(marketplace_ids))
+		body = dict(productType=product_type, patches=patches)
+
+		return self.make_request(method="PATCH", append_to_base_uri=append_to_base_uri, params=params, json_body=body)
+
+	def delete_listing_item(self, sku: str, marketplace_ids: list | None = None) -> dict:
+		"""Deletes (unpublishes) a listing by SKU."""
+		if not self.seller_id:
+			raise SPAPIError(error="missing_seller_id", error_description="seller_id is required for Listings Items API")
+
+		marketplace_ids = marketplace_ids or [self.marketplace_id]
+		append_to_base_uri = f"/{self.seller_id}/{sku}"
+		params = dict(marketplaceIds=",".join(marketplace_ids))
+
+		return self.make_request(method="DELETE", append_to_base_uri=append_to_base_uri, params=params)
 
 
 class Util:

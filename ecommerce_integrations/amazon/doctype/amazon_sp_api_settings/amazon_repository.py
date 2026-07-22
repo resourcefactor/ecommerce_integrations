@@ -13,6 +13,7 @@ from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api 
 	SPAPI,
 	CatalogItems,
 	Finances,
+	ListingsItems,
 	Orders,
 	SPAPIError,
 )
@@ -35,6 +36,7 @@ class AmazonRepository:
 			aws_access_key=self.amz_setting.aws_access_key,
 			aws_secret_key=self.amz_setting.get_password("aws_secret_key"),
 			country_code=self.amz_setting.country,
+			seller_id=self.amz_setting.seller_id,
 		)
 
 	def return_as_list(self, input) -> list:
@@ -484,6 +486,9 @@ class AmazonRepository:
 
 	def get_catalog_items_instance(self) -> CatalogItems:
 		return CatalogItems(**self.instance_params)
+
+	def get_listings_items_instance(self) -> ListingsItems:
+		return ListingsItems(**self.instance_params)
 
 
 def validate_amazon_sp_api_credentials(**args) -> None:

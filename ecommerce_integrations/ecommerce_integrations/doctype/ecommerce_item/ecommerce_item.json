@@ -101,7 +101,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Sync Status",
-   "options": "\nSynced\nNot Found\nTracking Disabled\nError",
+   "options": "\nSynced\nNot Found\nTracking Disabled\nError\nPending ASIN",
    "read_only": 1
   },
   {
