@@ -85,7 +85,9 @@ def _publish_item(setting, item) -> None:
 
 	repo = AmazonRepository(setting)
 	sku = item.item_code
-	product_type = item.get(ITEM_PRODUCT_TYPE_FIELD)
+	# Amazon's product type codes are uppercase (e.g. HEADPHONES) — normalize
+	# so a lowercase/mixed-case entry doesn't get rejected as an unknown type.
+	product_type = item.get(ITEM_PRODUCT_TYPE_FIELD).strip().upper()
 	price = setting.get_item_price(sku)
 
 	listings_api = repo.get_listings_items_instance()
@@ -382,7 +384,19 @@ def describe_product_type_requirements(amz_setting_name: str, product_type: str)
 	repo = AmazonRepository(setting)
 	pt_api = repo.get_product_type_definitions_instance()
 
-	schema = pt_api.get_schema(product_type)
+	# Amazon's product type codes are uppercase (e.g. HEADPHONES) — normalize
+	# so a lowercase/mixed-case typo doesn't silently fail to match.
+	product_type = (product_type or "").strip().upper()
+
+	try:
+		schema = pt_api.get_schema(product_type)
+	except SPAPIError as e:
+		frappe.throw(
+			_("Could not fetch requirements for Amazon Product Type {0}: {1}").format(
+				frappe.bold(product_type), e.error_description
+			)
+		)
+
 	properties = schema.get("properties") or {}
 
 	always_required = set(schema.get("required") or [])
@@ -410,6 +424,18 @@ def describe_product_type_requirements(amz_setting_name: str, product_type: str)
 		if enum:
 			entry["allowed_values"] = enum
 
+		# Amazon's own example text for this attribute (e.g. "24 Kilogrammes")
+		# — used to pre-fill a starting value in the Fetch Required Fields grid
+		# rather than leaving it blank. Prefer the enum's first allowed value
+		# when one exists: enum-constrained fields reject anything else, but
+		# Amazon's free-text "examples" hint is sometimes a locale sample
+		# (e.g. lowercase "fr") rather than a real submittable enum code.
+		examples = prop.get("examples") or value_schema.get("examples")
+		if enum:
+			entry["example"] = enum[0]
+		elif examples:
+			entry["example"] = examples[0]
+
 		results.append(entry)
 
 	results.sort(key=lambda e: (not e["always_required"], e["name"]))
@@ -433,7 +459,11 @@ def search_amazon_product_types(amz_setting_name: str, keywords: str) -> list:
 	pt_api = repo.get_product_type_definitions_instance()
 
 	keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
-	result = pt_api.search_by_keywords(keyword_list)
+
+	try:
+		result = pt_api.search_by_keywords(keyword_list)
+	except SPAPIError as e:
+		frappe.throw(_("Amazon product type search failed: {0}").format(e.error_description))
 
 	return [
 		{"name": pt.get("name"), "display_name": pt.get("displayName") or pt.get("name")}
