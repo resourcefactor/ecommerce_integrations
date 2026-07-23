@@ -18,26 +18,18 @@ function amazon_auto_derived_value(frm, parameter) {
 
 // Shared helper: resolve the active Amazon SP API Settings record and pass its
 // name to `callback`. Used by both Fetch Required Fields and Search Product
-// Type so there's one place that handles "none found" / "multiple found".
+// Type. Goes through a whitelisted server method rather than querying the
+// doctype directly — regular users (e.g. stock/sales roles editing Items)
+// don't have read permission on Amazon SP API Settings, which holds API
+// credentials and is restricted to System Manager.
 function with_active_amazon_setting(callback) {
-	frappe.db
-		.get_list("Amazon SP API Settings", {
-			filters: { is_active: 1 },
-			fields: ["name"],
-			limit: 2,
-		})
-		.then((settings) => {
-			if (!settings.length) {
-				frappe.msgprint(__("No active Amazon SP API Settings found."));
-				return;
-			}
-			if (settings.length > 1) {
-				frappe.msgprint(
-					__("Multiple active Amazon SP API Settings found — using {0}.", [settings[0].name])
-				);
-			}
-			callback(settings[0].name);
-		});
+	frappe.call({
+		method: "ecommerce_integrations.amazon.product.get_active_amazon_setting",
+		callback: (r) => {
+			if (r.exc || !r.message) return;
+			callback(r.message.name);
+		},
+	});
 }
 
 frappe.ui.form.on("Item", {

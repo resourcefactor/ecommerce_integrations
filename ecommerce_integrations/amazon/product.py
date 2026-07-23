@@ -13,6 +13,29 @@ ITEM_PRODUCT_TYPE_FIELD = "amazon_product_type"
 ITEM_ATTRIBUTES_FIELD = "ecommerce_attributes"
 
 
+@frappe.whitelist()
+def get_active_amazon_setting() -> dict:
+	"""Resolve the active `Amazon SP API Settings` record name for use by
+	Item-form actions (Fetch Required Fields, Search Product Type) triggered
+	by users who may not have read access to the settings doctype itself —
+	it holds API credentials and is restricted to System Manager. Only the
+	`name`/`is_active` lookup is done with elevated permission here; nothing
+	sensitive is returned to the client.
+	"""
+	settings = frappe.get_all(SETTING_DOCTYPE, filters={"is_active": 1}, fields=["name"], limit=2, ignore_permissions=True)
+
+	if not settings:
+		frappe.throw(_("No active Amazon SP API Settings found."))
+
+	if len(settings) > 1:
+		frappe.msgprint(
+			_("Multiple active Amazon SP API Settings found — using {0}.").format(frappe.bold(settings[0].name)),
+			alert=True,
+		)
+
+	return {"name": settings[0].name}
+
+
 def upload_erpnext_item(doc, method=None):
 	"""`Item` doc_event hook (after_insert / on_update).
 
