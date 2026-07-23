@@ -12,9 +12,11 @@ from frappe import _
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api import (
 	SPAPI,
 	CatalogItems,
+	CatalogItemsSearch,
 	Finances,
 	ListingsItems,
 	Orders,
+	ProductTypeDefinitions,
 	SPAPIError,
 )
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api_settings import (
@@ -487,8 +489,14 @@ class AmazonRepository:
 	def get_catalog_items_instance(self) -> CatalogItems:
 		return CatalogItems(**self.instance_params)
 
+	def get_catalog_items_search_instance(self) -> CatalogItemsSearch:
+		return CatalogItemsSearch(**self.instance_params)
+
 	def get_listings_items_instance(self) -> ListingsItems:
 		return ListingsItems(**self.instance_params)
+
+	def get_product_type_definitions_instance(self) -> ProductTypeDefinitions:
+		return ProductTypeDefinitions(**self.instance_params)
 
 
 def validate_amazon_sp_api_credentials(**args) -> None:

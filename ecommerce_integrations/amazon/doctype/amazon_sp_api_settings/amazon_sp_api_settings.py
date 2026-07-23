@@ -252,6 +252,36 @@ def setup_custom_fields():
 				depends_on="eval:doc.publish_on_amazon",
 				description="Amazon product type/category code (from Amazon's Product Type taxonomy) required to publish this item as a listing.",
 			),
+			dict(
+				fieldname="search_amazon_product_type",
+				label="Search Product Type",
+				fieldtype="Button",
+				insert_after="amazon_product_type",
+				depends_on="eval:doc.publish_on_amazon",
+				description="Search Amazon's product type taxonomy by keyword (e.g. 'headphones') if you don't already know the exact code.",
+			),
+			dict(
+				fieldname="ecommerce_attributes",
+				label="Ecommerce Attributes",
+				fieldtype="Table",
+				options="Ecommerce Attribute",
+				insert_after="search_amazon_product_type",
+				depends_on="eval:doc.publish_on_amazon",
+				description=(
+					"One row per attribute (e.g. brand, color, model_number), shared "
+					"across marketplace integrations (Amazon, Shopify, ...) — fill in "
+					"once here rather than per-platform. Use the 'Fetch Required Fields' "
+					"button above to pre-fill the correct Amazon parameter names for "
+					"this item's Amazon Product Type, then just type in each Value."
+				),
+			),
+			dict(
+				fieldname="fetch_amazon_attributes",
+				label="Fetch Required Fields",
+				fieldtype="Button",
+				insert_after="ecommerce_attributes",
+				depends_on="eval:doc.publish_on_amazon && doc.amazon_product_type",
+			),
 		],
 	}
 

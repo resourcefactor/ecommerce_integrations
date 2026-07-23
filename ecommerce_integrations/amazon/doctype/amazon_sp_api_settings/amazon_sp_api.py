@@ -16,7 +16,9 @@ __all__ = [
 	"Finances",
 	"Orders",
 	"CatalogItems",
+	"CatalogItemsSearch",
 	"ListingsItems",
+	"ProductTypeDefinitions",
 ]
 
 
@@ -371,7 +373,13 @@ class Orders(SPAPI):
 
 
 class CatalogItems(SPAPI):
-	"""Amazon Catalog Items API"""
+	"""Amazon Catalog Items API (v0) — used by inbound order sync in amazon_repository.py.
+
+	Kept on v0 deliberately: create_item()'s create_item_group/create_brand/
+	create_manufacturer helpers read the v0 `AttributeSets[0].{Brand,Manufacturer,
+	ProductGroup}` response shape. Do not upgrade this class's BASE_URI without
+	also rewriting those helpers for the 2022-04-01 `attributes` schema.
+	"""
 
 	BASE_URI = "/catalog/v0"
 
@@ -388,6 +396,46 @@ class CatalogItems(SPAPI):
 		data = dict(MarketplaceId=marketplace_id)
 
 		return self.make_request(append_to_base_uri=append_to_base_uri, params=data)
+
+
+class CatalogItemsSearch(SPAPI):
+	"""Amazon Catalog Items API (2022-04-01) — identifier search only.
+
+	Separate class (distinct BASE_URI) from `CatalogItems` (v0, used by
+	inbound order sync) so upgrading this search feature can't silently
+	change the response shape `amazon_repository.create_item()` depends on.
+	"""
+
+	BASE_URI = "/catalog/2022-04-01/items"
+
+	def search_by_identifier(
+		self,
+		identifier: str,
+		identifier_type: str = "EAN",
+		marketplace_ids: list | None = None,
+		included_data: list | None = None,
+	) -> dict:
+		"""Search Amazon's catalog for an existing ASIN matching a product identifier
+		(EAN/UPC/GTIN/ISBN/JAN). Use this before creating a brand-new listing —
+		if a matching ASIN already exists (e.g. another seller already listed this
+		exact product), attach to it instead of submitting the full category
+		attribute schema from scratch.
+
+		`identifier_type` one of: ASIN, EAN, GTIN, ISBN, JAN, MINSAN, SKU, UPC.
+		Returns the raw searchCatalogItems response — see `items` list, each with
+		an `asin` and (if requested) `attributes`/`summaries`.
+		"""
+		marketplace_ids = marketplace_ids or [self.marketplace_id]
+		included_data = included_data or ["summaries"]
+
+		params = dict(
+			marketplaceIds=",".join(marketplace_ids),
+			identifiers=identifier,
+			identifiersType=identifier_type,
+			includedData=",".join(included_data),
+		)
+
+		return self.make_request(append_to_base_uri="", params=params)
 
 
 class ListingsItems(SPAPI):
@@ -473,6 +521,61 @@ class ListingsItems(SPAPI):
 		params = dict(marketplaceIds=",".join(marketplace_ids))
 
 		return self.make_request(method="DELETE", append_to_base_uri=append_to_base_uri, params=params)
+
+
+class ProductTypeDefinitions(SPAPI):
+	"""Amazon Product Type Definitions API — the authoritative source for which
+	attributes a given product type (e.g. HEADPHONES, WEARABLE_COMPUTER) requires,
+	their JSON shape, and allowed enum values. Use this instead of guessing from
+	putListingsItem error messages.
+
+	https://developer-docs.amazon.com/sp-api/docs/product-type-definitions-api-v2020-09-01-reference
+	"""
+
+	BASE_URI = "/definitions/2020-09-01/productTypes"
+
+	def get_schema_link(
+		self,
+		product_type: str,
+		marketplace_ids: list | None = None,
+		requirements: str = "LISTING",
+	) -> dict:
+		"""Step 1: returns metadata including a pre-signed URL (schema.link.resource)
+		to fetch the actual JSON Schema from — the schema is NOT returned inline here.
+		"""
+		marketplace_ids = marketplace_ids or [self.marketplace_id]
+		append_to_base_uri = f"/{product_type}"
+		params = dict(marketplaceIds=",".join(marketplace_ids), requirements=requirements)
+
+		return self.make_request(method="GET", append_to_base_uri=append_to_base_uri, params=params)
+
+	def get_schema(self, product_type: str, marketplace_ids: list | None = None) -> dict:
+		"""Convenience wrapper: fetches the link (step 1) then follows it (step 2)
+		to return the actual JSON Schema for `product_type` — properties, required
+		fields, and enum values live under schema["properties"][attr_name].
+		"""
+		link_data = self.get_schema_link(product_type, marketplace_ids)
+		resource_url = (link_data.get("schema") or {}).get("link", {}).get("resource")
+		if not resource_url:
+			raise SPAPIError(
+				error="no_schema_link",
+				error_description=f"No schema link returned for product type {product_type}: {link_data}",
+			)
+
+		# pre-signed URL — no SP-API auth headers needed/wanted here
+		response = request(method="GET", url=resource_url)
+		return response.json()
+
+	def search_by_keywords(self, keywords: list[str], marketplace_ids: list | None = None) -> dict:
+		"""Search Amazon's product type taxonomy by keyword (e.g. ["headphones"]).
+		Returns the raw searchDefinitionsProductTypes response — see `productTypes`
+		list, each with `name` (the code to use as amazon_product_type) and
+		`displayName` (human label).
+		"""
+		marketplace_ids = marketplace_ids or [self.marketplace_id]
+		params = dict(marketplaceIds=",".join(marketplace_ids), keywords=",".join(keywords))
+
+		return self.make_request(method="GET", append_to_base_uri="", params=params)
 
 
 class Util:
