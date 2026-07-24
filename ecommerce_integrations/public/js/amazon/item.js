@@ -33,6 +33,68 @@ function with_active_amazon_setting(callback) {
 }
 
 frappe.ui.form.on("Item", {
+	refresh(frm) {
+		frm.trigger("render_amazon_publish_status");
+
+		const grid = frm.get_field("ecommerce_attributes")?.grid;
+		if (!grid) return;
+
+		grid.add_custom_button(__("Check Allowed Values"), () => {
+			const selected = grid.get_selected_children();
+			if (!selected.length) {
+				frappe.msgprint(__("Select one or more rows first (check the row, then click this button)."));
+				return;
+			}
+			if (!frm.doc.amazon_product_type) {
+				frappe.msgprint(__("Please set Amazon Product Type first."));
+				return;
+			}
+
+			with_active_amazon_setting((amz_setting_name) => {
+				const lookups = selected.map((row) =>
+					frappe.call({
+						method: "ecommerce_integrations.amazon.product.get_attribute_allowed_values",
+						args: {
+							amz_setting_name: amz_setting_name,
+							product_type: frm.doc.amazon_product_type,
+							parameter: row.parameter,
+						},
+					}).then((r) => r.message)
+				);
+
+				Promise.all(lookups).then((results) => {
+					const rows_html = results
+						.map((res) => {
+							if (!res) return "";
+							if (res.error) {
+								return `<tr><td><code>${res.name}</code></td><td colspan="2" style="color:#c0392b">${res.error}</td></tr>`;
+							}
+							const values = res.allowed_values
+								? res.allowed_values.join(", ")
+								: __("No fixed list — free text");
+							return `<tr>
+								<td><code>${res.name}</code></td>
+								<td>${res.title}</td>
+								<td>${values}</td>
+							</tr>`;
+						})
+						.join("");
+
+					frappe.msgprint({
+						title: __("Allowed Values"),
+						wide: true,
+						message: `<div style="max-height:400px;overflow:auto">
+							<table class="table table-bordered">
+								<thead><tr><th>${__("Parameter")}</th><th>${__("Name")}</th><th>${__("Allowed Values")}</th></tr></thead>
+								<tbody>${rows_html}</tbody>
+							</table>
+						</div>`,
+					});
+				});
+			});
+		});
+	},
+
 	fetch_amazon_attributes(frm) {
 		if (!frm.doc.amazon_product_type) {
 			frappe.msgprint(__("Please set Amazon Product Type first."));
@@ -152,5 +214,47 @@ frappe.ui.form.on("Item", {
 			__("Search Amazon Product Type"),
 			__("Search")
 		);
+	},
+
+	render_amazon_publish_status(frm) {
+		const $wrapper = frm.get_field("custom_item_publish_error")?.$wrapper;
+		if (!$wrapper) return;
+
+		if (frm.doc.__islocal) {
+			$wrapper.html("");
+			return;
+		}
+
+		$wrapper.html(`<div class="text-muted">${__("Loading Amazon publish status…")}</div>`);
+
+		frappe.call({
+			method: "ecommerce_integrations.amazon.product.get_item_publish_status",
+			args: { item_code: frm.doc.name },
+			callback: (r) => {
+				const info = r.message || {};
+
+				if (!info.status && !info.error) {
+					$wrapper.html(`<div class="text-muted">${__("Not yet synced to Amazon.")}</div>`);
+					return;
+				}
+
+				const synced_on = info.synced_on
+					? frappe.datetime.str_to_user(info.synced_on)
+					: __("Unknown");
+
+				const status_color = info.status === "Error" ? "#c0392b" : info.status === "Synced" ? "#2e7d32" : "#8a6d00";
+
+				let html = `<div>
+					<b>${__("Status")}:</b> <span style="color:${status_color}">${info.status || __("Unknown")}</span>
+					<span class="text-muted"> — ${__("last attempt")}: ${synced_on}</span>
+				</div>`;
+
+				if (info.error) {
+					html += `<div style="margin-top:6px;color:#c0392b;white-space:pre-wrap">${frappe.utils.escape_html(info.error)}</div>`;
+				}
+
+				$wrapper.html(html);
+			},
+		});
 	},
 });

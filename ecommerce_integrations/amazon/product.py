@@ -36,6 +36,35 @@ def get_active_amazon_setting() -> dict:
 	return {"name": settings[0].name}
 
 
+@frappe.whitelist()
+def get_item_publish_status(item_code: str) -> dict:
+	"""Latest Amazon sync status/error for one Item, for display on the Item
+	form's read-only "Item Publish Error" field — so a user can see what went
+	wrong (and when it was last attempted) without opening Ecommerce Item.
+
+	Returns {status, error, synced_on} — `synced_on` is whichever of
+	item_synced_on (publish attempts)/inventory_synced_on (stock/price sync)
+	is more recent, or None if this item has never been synced to Amazon.
+	"""
+	row = frappe.db.get_value(
+		"Ecommerce Item",
+		{"erpnext_item_code": item_code, "integration": MODULE_NAME},
+		["sync_status", "sync_error", "item_synced_on", "inventory_synced_on"],
+		as_dict=True,
+	)
+
+	if not row:
+		return {"status": None, "error": None, "synced_on": None}
+
+	synced_on = max(filter(None, [row.item_synced_on, row.inventory_synced_on]), default=None)
+
+	return {
+		"status": row.sync_status,
+		"error": row.sync_error,
+		"synced_on": synced_on,
+	}
+
+
 def upload_erpnext_item(doc, method=None):
 	"""`Item` doc_event hook (after_insert / on_update).
 
@@ -433,37 +462,78 @@ def describe_product_type_requirements(amz_setting_name: str, product_type: str)
 		if not prop:
 			continue  # referenced only in a conditional branch that doesn't apply generally
 
-		entry = {
-			"name": name,
-			"title": prop.get("title") or name,
-			"description": prop.get("description") or "",
-			"always_required": always,
-		}
-
-		# enum values usually live under items.properties.value.enum for these
-		# array-wrapped attributes; fall back to a top-level enum if present.
-		value_schema = ((prop.get("items") or {}).get("properties") or {}).get("value") or {}
-		enum = value_schema.get("enum") or prop.get("enum")
-		if enum:
-			entry["allowed_values"] = enum
-
-		# Amazon's own example text for this attribute (e.g. "24 Kilogrammes")
-		# — used to pre-fill a starting value in the Fetch Required Fields grid
-		# rather than leaving it blank. Prefer the enum's first allowed value
-		# when one exists: enum-constrained fields reject anything else, but
-		# Amazon's free-text "examples" hint is sometimes a locale sample
-		# (e.g. lowercase "fr") rather than a real submittable enum code.
-		examples = prop.get("examples") or value_schema.get("examples")
-		if enum:
-			entry["example"] = enum[0]
-		elif examples:
-			entry["example"] = examples[0]
-
+		entry = _describe_property(name, prop)
+		entry["always_required"] = always
 		results.append(entry)
 
 	results.sort(key=lambda e: (not e["always_required"], e["name"]))
 
 	return results
+
+
+def _describe_property(name: str, prop: dict) -> dict:
+	"""Build the {name, title, description, allowed_values, example} shape
+	shared by `describe_product_type_requirements` and
+	`get_attribute_allowed_values` from one raw JSON Schema property def.
+	"""
+	entry = {
+		"name": name,
+		"title": prop.get("title") or name,
+		"description": prop.get("description") or "",
+	}
+
+	# enum values usually live under items.properties.value.enum for these
+	# array-wrapped attributes; fall back to a top-level enum if present.
+	value_schema = ((prop.get("items") or {}).get("properties") or {}).get("value") or {}
+	enum = value_schema.get("enum") or prop.get("enum")
+	if enum:
+		entry["allowed_values"] = enum
+
+	# Amazon's own example text for this attribute (e.g. "24 Kilogrammes")
+	# — pre-fill hint. Prefer the enum's first allowed value when one exists:
+	# enum-constrained fields reject anything else, but Amazon's free-text
+	# "examples" hint is sometimes a locale sample (e.g. lowercase "fr")
+	# rather than a real submittable enum code.
+	examples = prop.get("examples") or value_schema.get("examples")
+	if enum:
+		entry["example"] = enum[0]
+	elif examples:
+		entry["example"] = examples[0]
+
+	return entry
+
+
+@frappe.whitelist()
+def get_attribute_allowed_values(amz_setting_name: str, product_type: str, parameter: str) -> dict:
+	"""Look up a single Amazon attribute's allowed values / example directly
+	from the product type's schema — for fixing one rejected field (e.g. after
+	a publish error like "invalid value for Battery Chemical Construction")
+	without re-fetching the whole category's requirement list.
+
+	Returns {name, title, description, allowed_values, example} or an
+	`error` key if the parameter isn't part of this product type's schema.
+	"""
+	setting = frappe.get_doc(SETTING_DOCTYPE, amz_setting_name)
+	repo = AmazonRepository(setting)
+	pt_api = repo.get_product_type_definitions_instance()
+
+	product_type = (product_type or "").strip().upper()
+	parameter = (parameter or "").strip()
+
+	try:
+		schema = pt_api.get_schema(product_type)
+	except SPAPIError as e:
+		frappe.throw(
+			_("Could not fetch schema for Amazon Product Type {0}: {1}").format(
+				frappe.bold(product_type), e.error_description
+			)
+		)
+
+	prop = (schema.get("properties") or {}).get(parameter)
+	if not prop:
+		return {"name": parameter, "error": _("No such attribute in {0}'s schema.").format(product_type)}
+
+	return _describe_property(parameter, prop)
 
 
 @frappe.whitelist()
@@ -495,22 +565,38 @@ def search_amazon_product_types(amz_setting_name: str, keywords: str) -> list:
 
 
 def _collect_conditional_required(all_of: list, required_names: set) -> None:
-	"""Recursively walk a JSON Schema `allOf` list, adding every `required`
-	array found anywhere inside (conditional `if`/`then`/`else` branches
-	included) to `required_names`. Amazon's product type schemas put most
-	category-specific mandatory fields here rather than the top-level
-	`required` array.
+	"""Walk a JSON Schema `allOf` list and collect field names from the
+	*consequence* (`then`/`else`) of each conditional branch — i.e. fields
+	that become required once some trigger condition is met.
+
+	Every branch in Amazon's product type schemas takes one of these shapes:
+	  - {"if": ..., "then": ...} / {"if": ..., "then": ..., "else": ...}
+	  - {"properties": ...}  (refines an existing field, adds no requirement)
+	  - {"allOf": [...]}     (nested composition — recurse)
+
+	Critically, `if.required` is the *trigger condition* (e.g. "if
+	league_name is set to NASCAR"), not something this product type actually
+	requires — earlier code wrongly treated it as required, which surfaced
+	irrelevant fields (e.g. league_name/team_name on a power bank) for every
+	product type. Only `then`/`else` are real "becomes required" signals, and
+	even those are conditional on the trigger — still not a guarantee for
+	every specific item, but far more accurate than reading `if` as well.
 	"""
 
-	def walk(node):
-		if isinstance(node, dict):
-			if isinstance(node.get("required"), list):
-				required_names.update(r for r in node["required"] if isinstance(r, str))
-			for value in node.values():
-				walk(value)
-		elif isinstance(node, list):
-			for value in node:
-				walk(value)
+	def collect_required(node):
+		if isinstance(node, dict) and isinstance(node.get("required"), list):
+			required_names.update(r for r in node["required"] if isinstance(r, str))
+
+	def walk(branches):
+		for branch in branches:
+			if not isinstance(branch, dict):
+				continue
+			if "allOf" in branch:
+				walk(branch["allOf"])
+			if "then" in branch:
+				collect_required(branch["then"])
+			if "else" in branch:
+				collect_required(branch["else"])
 
 	walk(all_of)
 
