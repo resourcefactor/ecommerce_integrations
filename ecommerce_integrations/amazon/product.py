@@ -66,6 +66,73 @@ def get_item_publish_status(item_code: str) -> dict:
 
 
 @frappe.whitelist()
+def sync_item_to_amazon(ecommerce_item: str) -> dict:
+	"""Manually push one item's full current state to Amazon right now —
+	attributes (incl. images, if 'Sync Images to Amazon' is enabled) via a
+	full republish, plus current stock/price via a patch — instead of waiting
+	for the after_insert/on_update hook or the hourly scheduled inventory job.
+
+	`ecommerce_item` is the name of an `Ecommerce Item` record with
+	integration=Amazon — this is the entry point for the "Sync Now" button
+	on that doctype.
+	"""
+	from ecommerce_integrations.amazon.inventory import upload_inventory_data_to_amazon
+
+	ecom_doc = frappe.get_doc("Ecommerce Item", ecommerce_item)
+	if ecom_doc.integration != MODULE_NAME:
+		frappe.throw(_("Ecommerce Item {0} is not an Amazon integration record.").format(ecommerce_item))
+
+	item = frappe.get_doc("Item", ecom_doc.erpnext_item_code)
+	if not item.get(ITEM_PUBLISH_FIELD):
+		frappe.throw(_("Item {0} does not have 'Publish on Amazon' checked.").format(item.name))
+
+	settings = frappe.get_all(SETTING_DOCTYPE, filters={"is_active": 1}, pluck="name")
+	if not settings:
+		frappe.throw(_("No active Amazon SP API Settings found."))
+	setting = frappe.get_doc(SETTING_DOCTYPE, settings[0])
+
+	# 1. full republish: attributes, ecommerce_attributes table, images (if enabled)
+	_publish_item(setting, item)
+
+	# 2. current stock/price, regardless of the "did it change since last sync"
+	# watermark used by the scheduled job — a manual Sync Now always pushes
+	# the current numbers.
+	warehouses = setting.get_merged_warehouses()
+	stock_result = "skipped (no warehouses configured)"
+	if warehouses:
+		from frappe.query_builder import DocType
+		from frappe.query_builder.functions import Sum
+
+		Bin = DocType("Bin")
+		bin_totals = (
+			frappe.qb.from_(Bin)
+			.select(Sum(Bin.actual_qty).as_("actual_qty"), Sum(Bin.reserved_qty).as_("reserved_qty"))
+			.where((Bin.item_code == item.item_code) & (Bin.warehouse.isin(warehouses)))
+			.run(as_dict=True)
+		)
+		actual_qty = (bin_totals[0].actual_qty if bin_totals else 0) or 0
+		reserved_qty = (bin_totals[0].reserved_qty if bin_totals else 0) or 0
+
+		ecom_doc.reload()
+		inventory_row = frappe._dict(
+			ecom_item=ecom_doc.name,
+			item_code=item.item_code,
+			integration_item_code=ecom_doc.integration_item_code,
+			actual_qty=actual_qty,
+			reserved_qty=reserved_qty,
+		)
+		upload_inventory_data_to_amazon(setting, [inventory_row])
+		stock_result = f"pushed (actual_qty={actual_qty}, reserved_qty={reserved_qty})"
+
+	ecom_doc.reload()
+	return {
+		"sync_status": ecom_doc.sync_status,
+		"sync_error": ecom_doc.sync_error,
+		"stock_result": stock_result,
+	}
+
+
+@frappe.whitelist()
 def copy_ecommerce_attributes(source_item_code: str, target_item_code: str, overwrite: bool = False) -> dict:
 	"""Copy all Ecommerce Attribute rows from source_item_code's Item onto
 	target_item_code's Item — for reusing a known-good attribute set from an
