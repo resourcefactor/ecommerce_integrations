@@ -65,6 +65,123 @@ def get_item_publish_status(item_code: str) -> dict:
 	}
 
 
+@frappe.whitelist()
+def copy_ecommerce_attributes(source_item_code: str, target_item_code: str, overwrite: bool = False) -> dict:
+	"""Copy all Ecommerce Attribute rows from source_item_code's Item onto
+	target_item_code's Item — for reusing a known-good attribute set from an
+	already-published item on similar items stuck in error.
+
+	If `overwrite` is falsy (default), existing parameters on the target are
+	left untouched and only missing ones are added — mirrors the "don't
+	clobber a value already filled in" behavior already used by Fetch
+	Required Fields (item.js). If truthy, matching parameters are replaced
+	with the source item's value.
+	"""
+	source = frappe.get_doc("Item", source_item_code)
+	target = frappe.get_doc("Item", target_item_code)
+
+	existing = {row.parameter: row for row in target.ecommerce_attributes}
+	copied, skipped = 0, 0
+
+	for row in source.ecommerce_attributes:
+		if row.parameter in existing:
+			if overwrite:
+				existing[row.parameter].value = row.value
+				existing[row.parameter].allowed_values = row.allowed_values
+			else:
+				skipped += 1
+				continue
+		else:
+			target.append(
+				"ecommerce_attributes",
+				{"parameter": row.parameter, "value": row.value, "allowed_values": row.allowed_values},
+			)
+		copied += 1
+
+	target.save()
+	return {"copied": copied, "skipped": skipped}
+
+
+@frappe.whitelist()
+def sync_attributes_from_amazon(amz_setting_name: str, item_code: str) -> dict:
+	"""Pull the live attribute set Amazon has on file for item_code's mapped
+	SKU and populate Item.ecommerce_attributes from it — for an item that's
+	already a good, live listing (e.g. filled in via Seller Central directly,
+	not through this app) so it can be used as a copy-from source for
+	similar items via `copy_ecommerce_attributes`.
+	"""
+	ecom_item = frappe.db.get_value(
+		"Ecommerce Item",
+		{"erpnext_item_code": item_code, "integration": MODULE_NAME},
+		["sku", "integration_item_code"],
+		as_dict=True,
+	)
+	if not ecom_item:
+		frappe.throw(_("No Amazon mapping found for {0} — publish or map it first.").format(item_code))
+
+	setting = frappe.get_doc(SETTING_DOCTYPE, amz_setting_name)
+	repo = AmazonRepository(setting)
+	listings_api = repo.get_listings_items_instance()
+
+	result = listings_api.get_listing_item(sku=ecom_item.sku, included_data=["attributes"])
+	amazon_attributes = result.get("attributes") or {}
+	if not amazon_attributes:
+		frappe.throw(_("Amazon returned no attributes for SKU {0}.").format(ecom_item.sku))
+
+	reverse_alias = {v: k for k, v in _AMAZON_ATTRIBUTE_ALIASES.items()}
+
+	item = frappe.get_doc("Item", item_code)
+	existing = {row.parameter: row for row in item.ecommerce_attributes}
+	updated, added = 0, 0
+
+	for amazon_key, value_list in amazon_attributes.items():
+		erp_key = reverse_alias.get(amazon_key, amazon_key)
+		value_str = _amazon_value_to_string(value_list)
+		if value_str is None:
+			continue
+
+		if erp_key in existing:
+			existing[erp_key].value = value_str
+			updated += 1
+		else:
+			item.append("ecommerce_attributes", {"parameter": erp_key, "value": value_str})
+			added += 1
+
+	item.save()
+	return {"updated": updated, "added": added, "total_from_amazon": len(amazon_attributes)}
+
+
+def _amazon_value_to_string(value_list) -> str | None:
+	"""Reverse of the wrapping done in `_ecommerce_attributes_to_amazon`: a
+	single-entry {"value": X, "marketplace_id": ..., "language_tag": ...}
+	wrapper collapses back to plain X; anything more structured (multiple
+	entries, or an entry without a bare "value" key — e.g. battery,
+	item_package_dimensions) is stored as its JSON string so it round-trips
+	through the Value column unchanged and re-parses correctly on next publish
+	(confirmed live: Amazon's getListingsItem returns backend enum codes like
+	"CN", never display labels like "China" — safe to copy through as-is).
+
+	Always returns either a plain str (for X that's already a string, e.g.
+	"CN") or a JSON-encoded string (for bool/int/float/dict/list X, e.g.
+	`batteries_required`'s `False` -> "false") — never a raw bool/int/float.
+	Storing a bare Python bool in the Small Text `value` column breaks
+	Frappe's own version-diff formatter (expects str) and, on the way back
+	via `_ecommerce_attributes_to_amazon`'s `frappe.parse_json`, a Python-
+	style "False"/"True" string wouldn't parse as JSON at all — round-tripping
+	through json.dumps keeps both directions correct.
+	"""
+	import json
+
+	if not isinstance(value_list, list) or not value_list:
+		return None
+
+	if len(value_list) == 1 and set(value_list[0].keys()) <= {"value", "marketplace_id", "language_tag"}:
+		value = value_list[0].get("value")
+		return value if isinstance(value, str) else json.dumps(value)
+
+	return json.dumps(value_list)
+
+
 def upload_erpnext_item(doc, method=None):
 	"""`Item` doc_event hook (after_insert / on_update).
 

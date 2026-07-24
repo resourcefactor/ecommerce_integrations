@@ -261,11 +261,34 @@ def setup_custom_fields():
 				description="Search Amazon's product type taxonomy by keyword (e.g. 'headphones') if you don't already know the exact code.",
 			),
 			dict(
+				fieldname="fetch_amazon_attributes",
+				label="Fetch Required Fields",
+				fieldtype="Button",
+				insert_after="search_amazon_product_type",
+				depends_on="eval:doc.publish_on_amazon && doc.amazon_product_type",
+			),
+			dict(
+				fieldname="copy_ecommerce_attributes_btn",
+				label="Copy Values From Item",
+				fieldtype="Button",
+				insert_after="fetch_amazon_attributes",
+				depends_on="eval:doc.publish_on_amazon",
+				description="Copy the Ecommerce Attributes table from another Item (e.g. one already published successfully) onto this item.",
+			),
+			dict(
+				fieldname="sync_attributes_from_amazon_btn",
+				label="Sync Values From Amazon",
+				fieldtype="Button",
+				insert_after="copy_ecommerce_attributes_btn",
+				depends_on="eval:doc.publish_on_amazon",
+				description="Pull the live attribute values Amazon has on file for this item's mapped SKU (requires it to already be published/mapped).",
+			),
+			dict(
 				fieldname="ecommerce_attributes",
 				label="Ecommerce Attributes",
 				fieldtype="Table",
 				options="Ecommerce Attribute",
-				insert_after="search_amazon_product_type",
+				insert_after="sync_attributes_from_amazon_btn",
 				depends_on="eval:doc.publish_on_amazon",
 				description=(
 					"One row per attribute (e.g. brand, color, model_number), shared "
@@ -274,13 +297,6 @@ def setup_custom_fields():
 					"button above to pre-fill the correct Amazon parameter names for "
 					"this item's Amazon Product Type, then just type in each Value."
 				),
-			),
-			dict(
-				fieldname="fetch_amazon_attributes",
-				label="Fetch Required Fields",
-				fieldtype="Button",
-				insert_after="ecommerce_attributes",
-				depends_on="eval:doc.publish_on_amazon && doc.amazon_product_type",
 			),
 		],
 	}

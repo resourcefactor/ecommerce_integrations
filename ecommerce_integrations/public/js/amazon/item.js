@@ -149,6 +149,81 @@ frappe.ui.form.on("Item", {
 		});
 	},
 
+	copy_ecommerce_attributes_btn(frm) {
+		frappe.prompt(
+			[
+				{
+					fieldname: "source_item",
+					fieldtype: "Link",
+					options: "Item",
+					label: __("Copy Values From"),
+					reqd: 1,
+					description: __("Pick an item that's already published successfully."),
+					get_query: () => ({
+						filters: { publish_on_amazon: 1, name: ["!=", frm.doc.name] },
+					}),
+				},
+				{
+					fieldname: "overwrite",
+					fieldtype: "Check",
+					label: __("Overwrite existing values"),
+					default: 0,
+					description: __("If unchecked, parameters already present on this item are left as-is."),
+				},
+			],
+			(values) => {
+				frappe.call({
+					method: "ecommerce_integrations.amazon.product.copy_ecommerce_attributes",
+					args: {
+						source_item_code: values.source_item,
+						target_item_code: frm.doc.name,
+						overwrite: values.overwrite,
+					},
+					freeze: true,
+					freeze_message: __("Copying values…"),
+					callback: (r) => {
+						if (r.exc) return;
+						const res = r.message || {};
+						frm.reload_doc();
+						frappe.show_alert({
+							message: __("Copied {0} parameter(s), skipped {1} already present.", [
+								res.copied || 0,
+								res.skipped || 0,
+							]),
+							indicator: "green",
+						});
+					},
+				});
+			},
+			__("Copy Values From Item"),
+			__("Copy")
+		);
+	},
+
+	sync_attributes_from_amazon_btn(frm) {
+		with_active_amazon_setting((amz_setting_name) => {
+			frappe.call({
+				method: "ecommerce_integrations.amazon.product.sync_attributes_from_amazon",
+				args: { amz_setting_name: amz_setting_name, item_code: frm.doc.name },
+				freeze: true,
+				freeze_message: __("Fetching live values from Amazon…"),
+				callback: (r) => {
+					if (r.exc) return;
+					const res = r.message || {};
+					frm.reload_doc();
+					frappe.msgprint({
+						title: __("Synced From Amazon"),
+						indicator: "green",
+						message: __(
+							"Updated {0} and added {1} parameter(s) from {2} attribute(s) Amazon has on file for this item.",
+							[res.updated || 0, res.added || 0, res.total_from_amazon || 0]
+						),
+					});
+				},
+			});
+		});
+	},
+
 	search_amazon_product_type(frm) {
 		frappe.prompt(
 			[
