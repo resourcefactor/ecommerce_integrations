@@ -41,6 +41,7 @@
   "is_old_data_migrated",
   "publishing_section",
   "upload_erpnext_items",
+  "sync_images_to_amazon",
   "publish_items",
   "backfill_asins",
   "column_break_5",
@@ -285,6 +286,13 @@
    "fieldname": "upload_erpnext_items",
    "fieldtype": "Check",
    "label": "Upload ERPNext Items to Amazon"
+  },
+  {
+   "default": "0",
+   "description": "Include images when publishing/updating listings — Item.image as the main image, all other Item attachments (in order) as secondary images (max 8). Requires the site to be reachable on the public internet at the URL configured in Website Settings, since Amazon fetches images by URL rather than accepting file uploads.",
+   "fieldname": "sync_images_to_amazon",
+   "fieldtype": "Check",
+   "label": "Sync Images to Amazon"
   },
   {
    "depends_on": "eval: !doc.__islocal && doc.is_active",

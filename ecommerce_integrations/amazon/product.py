@@ -153,7 +153,7 @@ def _publish_item(setting, item) -> None:
 		attributes = _build_minimal_offer_attributes(price, currency)
 		attributes["merchant_suggested_asin"] = [{"value": matched_asin}]
 	else:
-		attributes = _build_listing_attributes(item, price, listings_api.marketplace_id, currency)
+		attributes = _build_listing_attributes(item, price, listings_api.marketplace_id, currency, setting)
 
 	try:
 		result = listings_api.put_listing_item(sku=sku, product_type=product_type, attributes=attributes)
@@ -654,7 +654,7 @@ _AMAZON_ATTRIBUTE_ALIASES = {
 }
 
 
-def _build_listing_attributes(item, price, marketplace_id, currency="USD") -> dict:
+def _build_listing_attributes(item, price, marketplace_id, currency="USD", setting=None) -> dict:
 	"""Attribute set for publishing: mandatory/available Item fields, plus
 	whatever platform-agnostic data is provided in the `Item.ecommerce_attributes`
 	child table (one row per parameter: Parameter | Value).
@@ -701,7 +701,49 @@ def _build_listing_attributes(item, price, marketplace_id, currency="USD") -> di
 			{"type": "ean", "value": barcode, "marketplace_id": marketplace_id}
 		]
 
+	if setting and setting.get("sync_images_to_amazon"):
+		attributes.update(_build_image_attributes(item, marketplace_id))
+
 	attributes.update(_ecommerce_attributes_to_amazon(item, marketplace_id))
+
+	return attributes
+
+
+def _build_image_attributes(item, marketplace_id: str) -> dict:
+	"""Item.image -> main_product_image_locator; every other File attachment
+	on the Item (in creation order) -> other_product_image_locator_1..8.
+
+	Amazon fetches images by URL rather than accepting uploads, so this only
+	works if the site is reachable on the public internet at the URL
+	`frappe.utils.get_url()` resolves to (its configured host_name) — on an
+	internal/dev site (e.g. a bench dev server) these URLs will be
+	unreachable from Amazon and the listing will show a missing-image issue.
+	"""
+	site_url = frappe.utils.get_url()
+	attributes = {}
+
+	if item.image:
+		attributes["main_product_image_locator"] = [
+			{"media_location": f"{site_url}{item.image}", "marketplace_id": marketplace_id}
+		]
+
+	other_files = frappe.get_all(
+		"File",
+		filters={
+			"attached_to_doctype": "Item",
+			"attached_to_name": item.name,
+			"file_url": ["!=", item.image or ""],
+			"is_private": 0,
+		},
+		fields=["file_url"],
+		order_by="creation asc",
+		limit=8,
+	)
+
+	for idx, file_row in enumerate(other_files, start=1):
+		attributes[f"other_product_image_locator_{idx}"] = [
+			{"media_location": f"{site_url}{file_row.file_url}", "marketplace_id": marketplace_id}
+		]
 
 	return attributes
 
