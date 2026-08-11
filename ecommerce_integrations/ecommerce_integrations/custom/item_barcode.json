@@ -1,0 +1,32 @@
+{
+ "custom_fields": [],
+ "custom_perms": [],
+ "doctype": "Item Barcode",
+ "links": [],
+ "property_setters": [
+  {
+   "_assign": null,
+   "_comments": null,
+   "_liked_by": null,
+   "_user_tags": null,
+   "creation": "2026-05-23 05:29:35.646911",
+   "default_value": null,
+   "doc_type": "Item Barcode",
+   "docstatus": 0,
+   "doctype_or_field": "DocField",
+   "field_name": "barcode",
+   "idx": 0,
+   "is_system_generated": 1,
+   "modified": "2026-08-10 18:26:15.357249",
+   "modified_by": "Administrator",
+   "module": null,
+   "name": "Item Barcode-barcode-hidden",
+   "owner": "accounts@resourcefactors.com",
+   "property": "hidden",
+   "property_type": "Check",
+   "row_name": null,
+   "value": "0"
+  }
+ ],
+ "sync_on_migrate": 1
+}
