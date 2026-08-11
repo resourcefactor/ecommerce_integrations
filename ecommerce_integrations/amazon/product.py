@@ -71,17 +71,16 @@ def sync_item_to_amazon(ecommerce_item: str) -> dict:
 
 	This app does not create new Amazon listings — `ecommerce_item` must
 	already be mapped to a real SKU (via CSV import or a prior manual
-	mapping) with `amazon_product_type` set, since Amazon's API requires a
-	product type on every patch call even for an existing listing.
+	mapping), since Amazon's API requires a product type on every patch call
+	even for an existing listing. If `amazon_product_type` isn't set yet,
+	it's auto-fetched from Amazon's Listings Items API and saved onto the
+	record before syncing (see `push_single_item_to_amazon`).
 	"""
 	from ecommerce_integrations.amazon.inventory import push_single_item_to_amazon
 
 	ecom_doc = frappe.get_doc("Ecommerce Item", ecommerce_item)
 	if ecom_doc.integration != MODULE_NAME:
 		frappe.throw(_("Ecommerce Item {0} is not an Amazon integration record.").format(ecommerce_item))
-
-	if not ecom_doc.get(ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD):
-		frappe.throw(_("Set Amazon Product Type on this Ecommerce Item before syncing."))
 
 	settings = frappe.get_all(SETTING_DOCTYPE, filters={"is_active": 1}, pluck="name")
 	if not settings:

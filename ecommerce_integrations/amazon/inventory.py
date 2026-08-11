@@ -84,6 +84,18 @@ def get_amazon_inventory_and_price_changes(warehouses: list[str], price_list: st
 	return query.run(as_dict=1)
 
 
+def fetch_amazon_product_type(listings_api, sku: str) -> str | None:
+	"""Look up the product type Amazon has on file for an already-published SKU,
+	via the Listings Items API (`summaries[].productType`). Used to backfill
+	`amazon_product_type` on Ecommerce Item when it wasn't set at mapping time —
+	Amazon requires a product type on every listing patch, even just to push
+	stock/price to an existing listing.
+	"""
+	data = listings_api.get_listing_item(sku=sku, included_data=["summaries"])
+	summaries = data.get("summaries") or []
+	return summaries[0].get("productType") if summaries else None
+
+
 def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 	repo = AmazonRepository(setting)
 	listings_api = repo.get_listings_items_instance()
@@ -100,9 +112,21 @@ def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 					"Ecommerce Item", d.ecom_item, ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD
 				)
 				if not product_type:
-					raise SPAPIError(
-						error="missing_product_type",
-						error_description=f"Ecommerce Item {d.ecom_item} has no Amazon Product Type set.",
+					product_type = fetch_amazon_product_type(listings_api, sku)
+					if not product_type:
+						raise SPAPIError(
+							error="missing_product_type",
+							error_description=(
+								f"Ecommerce Item {d.ecom_item} has no Amazon Product Type set, and it "
+								f"could not be auto-fetched from Amazon (SKU {sku} may not be listed yet)."
+							),
+						)
+					frappe.db.set_value(
+						"Ecommerce Item",
+						d.ecom_item,
+						ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD,
+						product_type,
+						update_modified=False,
 					)
 
 				price = setting.get_item_price(d.item_code)
@@ -140,11 +164,27 @@ def push_single_item_to_amazon(setting, ecom_doc) -> str:
 	"""Push one Ecommerce Item's current stock, price, and images (if enabled)
 	to Amazon right now — used by the "Sync Now" button, bypassing the "did
 	it change since last sync" watermark the scheduled job uses.
+
+	If `amazon_product_type` isn't set on the Ecommerce Item yet, it's looked
+	up live from Amazon (Listings Items API) and saved back onto the record —
+	Amazon requires a product type on every patch call, but sellers don't
+	always set it when mapping an already-published listing.
 	"""
 	item_code = ecom_doc.erpnext_item_code
+	sku = ecom_doc.sku or item_code
+
+	repo = AmazonRepository(setting)
+	listings_api = repo.get_listings_items_instance()
+
 	product_type = ecom_doc.get(ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD)
 	if not product_type:
-		frappe.throw(f"Ecommerce Item {ecom_doc.name} has no Amazon Product Type set.")
+		product_type = fetch_amazon_product_type(listings_api, sku)
+		if not product_type:
+			frappe.throw(
+				f"Ecommerce Item {ecom_doc.name} has no Amazon Product Type set, and it "
+				f"could not be auto-fetched from Amazon (SKU {sku} may not be listed yet)."
+			)
+		ecom_doc.db_set(ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD, product_type, update_modified=False)
 
 	warehouses = setting.get_merged_warehouses()
 	if not warehouses:
@@ -161,11 +201,8 @@ def push_single_item_to_amazon(setting, ecom_doc) -> str:
 	reserved_qty = (bin_totals[0].reserved_qty if bin_totals else 0) or 0
 	available_qty = max(cint(actual_qty) - cint(reserved_qty), 0)
 
-	repo = AmazonRepository(setting)
-	listings_api = repo.get_listings_items_instance()
 	currency = frappe.db.get_value("Price List", setting.price_list, "currency") or "USD"
 	price = setting.get_item_price(item_code)
-	sku = ecom_doc.sku or item_code
 
 	patches = _build_stock_price_patches(available_qty, price, currency)
 	patches += _build_image_patches(setting, item_code)
