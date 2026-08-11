@@ -34,15 +34,6 @@ frappe.ui.form.on("Shopify Setting", {
 				integration: "Shopify",
 			});
 		});
-		frm.add_custom_button(__("Sync Items to Shopify"), function () {
-			frappe.call({
-				doc: frm.doc,
-				method: "sync_items_to_shopify",
-				callback: (r) => {
-					if (!r.exc) frappe.msgprint(r.message);
-				},
-			});
-		});
 		frm.add_custom_button(__("Sync Price to Shopify"), function () {
 			frappe.call({
 				doc: frm.doc,

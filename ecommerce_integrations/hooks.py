@@ -42,10 +42,7 @@ doctype_js = {
 		"public/js/unicommerce/sales_invoice.js",
 		"public/js/common/ecommerce_transactions.js",
 	],
-	"Item": [
-		"public/js/unicommerce/item.js",
-		"public/js/amazon/item.js",
-	],
+	"Item": "public/js/unicommerce/item.js",
 	"Stock Entry": "public/js/unicommerce/stock_entry.js",
 	"Pick List": "public/js/unicommerce/pick_list.js",
 }
@@ -111,14 +108,6 @@ before_uninstall = "ecommerce_integrations.uninstall.before_uninstall"
 
 doc_events = {
 	"Item": {
-		"after_insert": [
-			"ecommerce_integrations.shopify.product.upload_erpnext_item",
-			"ecommerce_integrations.amazon.product.upload_erpnext_item",
-		],
-		"on_update": [
-			"ecommerce_integrations.shopify.product.upload_erpnext_item",
-			"ecommerce_integrations.amazon.product.upload_erpnext_item",
-		],
 		"validate": [
 			"ecommerce_integrations.utils.taxation.validate_tax_template",
 			"ecommerce_integrations.unicommerce.product.validate_item",
@@ -155,7 +144,6 @@ scheduler_events = {
 	"hourly": [
 		"ecommerce_integrations.shopify.order.sync_old_orders",
 		"ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api_settings.schedule_get_order_details",
-		"ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api_settings.schedule_backfill_asins",
 	],
 	"hourly_long": [
 		"ecommerce_integrations.zenoti.doctype.zenoti_settings.zenoti_settings.sync_invoices",

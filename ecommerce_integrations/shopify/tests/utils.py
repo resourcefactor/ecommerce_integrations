@@ -65,8 +65,6 @@ class TestCase(IntegrationTestCase):
 					"delivery_note_series": "MAT-DN-.YYYY.-",
 					"sync_sales_invoice": 1,
 					"sales_invoice_series": "SINV-.YY.-",
-					"upload_erpnext_items": 1,
-					"update_shopify_item_on_update": 1,
 					"update_erpnext_stock_levels_to_shopify": 1,
 					"doctype": "Shopify Setting",
 					"shopify_warehouse_mapping": [

@@ -17,79 +17,7 @@ frappe.ui.form.on("Amazon SP API Settings", {
 			frm.add_custom_button(__("Check Listing Status"), () => {
 				frm.trigger("check_amazon_listing_status");
 			});
-			frm.add_custom_button(__("Discover Required Fields"), () => {
-				frm.trigger("discover_required_fields");
-			});
 		}
-	},
-
-	discover_required_fields(frm) {
-		frappe.prompt(
-			[
-				{
-					fieldname: "product_type",
-					fieldtype: "Data",
-					label: __("Amazon Product Type"),
-					reqd: 1,
-					description: __("e.g. HEADPHONES, WEARABLE_COMPUTER — must match an Item's Amazon Product Type field"),
-				},
-			],
-			(values) => {
-				frappe.call({
-					method: "ecommerce_integrations.amazon.product.describe_product_type_requirements",
-					args: { amz_setting_name: frm.docname, product_type: values.product_type },
-					freeze: true,
-					freeze_message: __("Fetching schema from Amazon…"),
-					callback: (r) => {
-						if (r.exc) return;
-						const rows = r.message || [];
-						if (!rows.length) {
-							frappe.msgprint(__("No requirements found — check the product type code is correct."));
-							return;
-						}
-
-						const alwaysRows = rows.filter((r) => r.always_required);
-						const conditionalRows = rows.filter((r) => !r.always_required);
-
-						const row_html = (row) => {
-							const values_html = row.allowed_values
-								? `<br><i>${__("Allowed")}: ${row.allowed_values.join(", ")}</i>`
-								: "";
-							return `<tr>
-								<td><code>${row.name}</code></td>
-								<td>${row.title}${values_html}</td>
-							</tr>`;
-						};
-
-						const table = (title, rowsForTable, note) => `
-							<h6>${title} (${rowsForTable.length})</h6>
-							${note ? `<p class="text-muted">${note}</p>` : ""}
-							<table class="table table-bordered">
-								<thead><tr><th>${__("Attribute (JSON key)")}</th><th>${__("What it means")}</th></tr></thead>
-								<tbody>${rowsForTable.map(row_html).join("")}</tbody>
-							</table>`;
-
-						const html = `<div style="max-height:500px;overflow:auto">
-							${table(__("Always Required"), alwaysRows)}
-							${table(
-								__("Conditionally Required"),
-								conditionalRows,
-								__("Depend on category/variation specifics — likely relevant but not guaranteed for every item.")
-							)}
-						</div>
-						<p class="text-muted">${__("Use these keys in the Item's 'E-commerce Attributes (JSON)' field.")}</p>`;
-
-						frappe.msgprint({
-							title: __("{0} — {1} Fields", [values.product_type, rows.length]),
-							message: html,
-							wide: true,
-						});
-					},
-				});
-			},
-			__("Discover Required Fields"),
-			__("Fetch")
-		);
 	},
 
 	check_amazon_listing_status(frm) {

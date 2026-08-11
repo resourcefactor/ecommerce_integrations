@@ -2,6 +2,8 @@ import time
 from collections import Counter
 
 import frappe
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Sum
 from frappe.utils import cint, create_batch, now
 from pyactiveresource.connection import ClientError, ResourceNotFound
 from shopify.resources import InventoryLevel, Variant
@@ -14,6 +16,73 @@ from ecommerce_integrations.controllers.scheduling import need_to_run
 from ecommerce_integrations.shopify.connection import temp_shopify_session
 from ecommerce_integrations.shopify.constants import MODULE_NAME, SETTING_DOCTYPE
 from ecommerce_integrations.shopify.utils import create_shopify_log
+
+
+@temp_shopify_session
+def push_single_item_to_shopify(setting, ecom_doc) -> str:
+	"""Push one already-mapped item's current stock (across all mapped
+	locations) and price to Shopify right now — the entry point for the
+	"Sync Now" button on Ecommerce Item.
+	"""
+	from ecommerce_integrations.shopify.product import (
+		_apply_metafields,
+		_fetch_product_with_retry,
+		_sync_product_with_retry,
+		map_erpnext_item_to_shopify,
+	)
+
+	item_code = ecom_doc.erpnext_item_code
+
+	shopify_product = _fetch_product_with_retry(ecom_doc.integration_item_code)
+	if not shopify_product:
+		update_inventory_sync_status(ecom_doc.name, time=now(), status="Not Found")
+		return "skipped (Shopify product not found)"
+
+	item = frappe.get_doc("Item", item_code)
+	extra_variant_fields, metafields = map_erpnext_item_to_shopify(
+		shopify_product=shopify_product, erpnext_item=item, setting=setting
+	)
+
+	price = setting.get_item_price(item_code)
+	default_variant = shopify_product.variants[0] if shopify_product.variants else None
+	if default_variant:
+		if price is not None:
+			default_variant.price = price
+		for field, val in (extra_variant_fields or {}).items():
+			setattr(default_variant, field, val)
+
+	_sync_product_with_retry(shopify_product)
+	if metafields:
+		_apply_metafields(shopify_product.id, metafields)
+
+	stock_result = "price only (no location mapping)"
+	location_warehouse_map = setting.get_location_warehouse_map()
+	if location_warehouse_map and ecom_doc.variant_id:
+		variant = _find_variant_with_retry(ecom_doc.variant_id)
+		inventory_item_id = variant.inventory_item_id
+		Bin = DocType("Bin")
+		pushed = []
+		for location_id, warehouses in location_warehouse_map.items():
+			bin_totals = (
+				frappe.qb.from_(Bin)
+				.select(Sum(Bin.actual_qty).as_("actual_qty"), Sum(Bin.reserved_qty).as_("reserved_qty"))
+				.where((Bin.item_code == item_code) & (Bin.warehouse.isin(warehouses)))
+				.run(as_dict=True)
+			)
+			actual_qty = (bin_totals[0].actual_qty if bin_totals else 0) or 0
+			reserved_qty = (bin_totals[0].reserved_qty if bin_totals else 0) or 0
+			available = cint(actual_qty) - cint(reserved_qty)
+
+			_set_inventory_level_with_retry(
+				location_id=location_id,
+				inventory_item_id=inventory_item_id,
+				available=available,
+			)
+			pushed.append(f"{location_id}={available}")
+		stock_result = ", ".join(pushed)
+
+	update_inventory_sync_status(ecom_doc.name, time=now(), status="Synced")
+	return f"pushed (price={price}, stock: {stock_result})"
 
 
 def update_inventory_on_shopify() -> None:

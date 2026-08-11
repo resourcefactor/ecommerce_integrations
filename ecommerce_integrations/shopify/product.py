@@ -12,7 +12,6 @@ from ecommerce_integrations.controllers.scheduling import need_to_run
 from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item import ecommerce_item
 from ecommerce_integrations.shopify.connection import temp_shopify_session
 from ecommerce_integrations.shopify.constants import (
-	ITEM_PUBLISH_FIELD,
 	ITEM_SELLING_RATE_FIELD,
 	MODULE_NAME,
 	SETTING_DOCTYPE,
@@ -339,158 +338,6 @@ def get_item_code(shopify_item):
 
 
 @temp_shopify_session
-def upload_erpnext_item(doc, method=None):
-	"""This hook is called when inserting new or updating existing `Item`.
-
-	New items are pushed to shopify and changes to existing items are
-	updated depending on what is configured in "Shopify Setting" doctype.
-	"""
-	template_item = item = doc  # alias for readability
-	# a new item recieved from ecommerce_integrations is being inserted
-	if item.flags.from_integration:
-		return
-
-	setting = frappe.get_doc(SETTING_DOCTYPE)
-
-	if not setting.is_enabled() or not setting.upload_erpnext_items:
-		return
-
-	if frappe.flags.in_import:
-		return
-
-	if item.has_variants:
-		return
-
-	if len(item.attributes) > 3:
-		msgprint(_("Template items/Items with 4 or more attributes can not be uploaded to Shopify."))
-		return
-
-	if not item.get(ITEM_PUBLISH_FIELD):
-		return
-
-	if doc.variant_of and not setting.upload_variants_as_items:
-		msgprint(_("Enable variant sync in setting to upload item to Shopify."))
-		return
-
-	if item.variant_of:
-		template_item = frappe.get_doc("Item", item.variant_of)
-
-	product_id = frappe.db.get_value(
-		"Ecommerce Item",
-		{"erpnext_item_code": template_item.name, "integration": MODULE_NAME},
-		"integration_item_code",
-	)
-	is_new_product = not bool(product_id)
-
-	if is_new_product:
-		product = Product()
-		product.published = False
-		product.status = "active" if setting.sync_new_item_as_active else "draft"
-
-		extra_variant_fields, metafields = map_erpnext_item_to_shopify(
-			shopify_product=product, erpnext_item=template_item, setting=setting
-		)
-		is_successful = product.save()
-
-		if is_successful:
-			update_default_variant_properties(
-				product,
-				sku=template_item.item_code,
-				price=setting.get_item_price(template_item.item_code),
-				is_stock_item=template_item.is_stock_item,
-				extra_variant_fields=extra_variant_fields,
-			)
-			if item.variant_of:
-				product.options = []
-				product.variants = []
-				variant_attributes = {
-					"title": template_item.item_name,
-					"sku": item.item_code,
-					"price": setting.get_item_price(item.item_code),
-				}
-				max_index_range = min(3, len(template_item.attributes))
-				for i in range(0, max_index_range):
-					attr = template_item.attributes[i]
-					product.options.append(
-						{
-							"name": attr.attribute,
-							"values": frappe.db.get_all(
-								"Item Attribute Value", {"parent": attr.attribute}, pluck="attribute_value"
-							),
-						}
-					)
-					try:
-						variant_attributes[f"option{i+1}"] = item.attributes[i].attribute_value
-					except IndexError:
-						frappe.throw(
-							_("Shopify Error: Missing value for attribute {}").format(attr.attribute)
-						)
-				product.variants.append(Variant(variant_attributes))
-
-			product.save()  # push variant
-			_apply_metafields(product.id, metafields)
-
-			ecom_items = list(set([item, template_item]))
-			for d in ecom_items:
-				ecom_item = frappe.get_doc(
-					{
-						"doctype": "Ecommerce Item",
-						"erpnext_item_code": d.name,
-						"integration": MODULE_NAME,
-						"integration_item_code": str(product.id),
-						"variant_id": "" if d.has_variants else str(product.variants[0].id),
-						"sku": "" if d.has_variants else str(product.variants[0].sku),
-						"has_variants": d.has_variants,
-						"variant_of": d.variant_of,
-					}
-				)
-				ecom_item.insert()
-
-		write_upload_log(status=is_successful, product=product, item=item)
-	elif setting.update_shopify_item_on_update:
-		product = Product.find(product_id)
-		if product:
-			extra_variant_fields, metafields = map_erpnext_item_to_shopify(
-				shopify_product=product, erpnext_item=template_item, setting=setting
-			)
-			if not item.variant_of:
-				update_default_variant_properties(
-					product,
-					is_stock_item=template_item.is_stock_item,
-					price=setting.get_item_price(item.item_code),
-					extra_variant_fields=extra_variant_fields,
-				)
-			else:
-				variant_attributes = {"sku": item.item_code, "price": setting.get_item_price(item.item_code)}
-				product.options = []
-				max_index_range = min(3, len(template_item.attributes))
-				for i in range(0, max_index_range):
-					attr = template_item.attributes[i]
-					product.options.append(
-						{
-							"name": attr.attribute,
-							"values": frappe.db.get_all(
-								"Item Attribute Value", {"parent": attr.attribute}, pluck="attribute_value"
-							),
-						}
-					)
-					try:
-						variant_attributes[f"option{i+1}"] = item.attributes[i].attribute_value
-					except IndexError:
-						frappe.throw(
-							_("Shopify Error: Missing value for attribute {}").format(attr.attribute)
-						)
-				product.variants.append(Variant(variant_attributes))
-
-			is_successful = product.save()
-			if is_successful:
-				_apply_metafields(product.id, metafields)
-				if item.variant_of:
-					map_erpnext_variant_to_shopify_variant(product, item, variant_attributes)
-
-			write_upload_log(status=is_successful, product=product, item=item, action="Updated")
-
-
 def map_erpnext_variant_to_shopify_variant(shopify_product: Product, erpnext_item, variant_attributes):
 	variant_product_id = frappe.db.get_value(
 		"Ecommerce Item",
@@ -576,54 +423,6 @@ def get_shopify_weight_uom(erpnext_weight_uom: str) -> str:
 			return shopify_uom
 
 
-def update_default_variant_properties(
-	shopify_product: Product,
-	is_stock_item: bool,
-	sku: str | None = None,
-	price: float | None = None,
-	extra_variant_fields: dict | None = None,
-):
-	"""Shopify creates default variant upon saving the product.
-
-	Some item properties are supposed to be updated on the default variant.
-	Input: saved shopify_product, sku, price, and any extra variant fields from the mapping table.
-	"""
-	default_variant: Variant = shopify_product.variants[0]
-
-	# this will create Inventory item and qty will be updated by scheduled job.
-	if is_stock_item:
-		default_variant.inventory_management = "shopify"
-
-	if price is not None:
-		default_variant.price = price
-	if sku is not None:
-		default_variant.sku = sku
-	if extra_variant_fields:
-		for field, val in extra_variant_fields.items():
-			setattr(default_variant, field, val)
-
-
-def write_upload_log(status: bool, product: Product, item, action="Created") -> None:
-	if not status:
-		msg = _("Failed to upload item to Shopify") + "<br>"
-		msg += _("Shopify reported errors:") + " " + ", ".join(product.errors.full_messages())
-		msgprint(msg, title="Note", indicator="orange")
-
-		create_shopify_log(
-			status="Error",
-			request_data=product.to_dict(),
-			message=msg,
-			method="upload_erpnext_item",
-		)
-	else:
-		create_shopify_log(
-			status="Success",
-			request_data=product.to_dict(),
-			message=f"{action} Item: {item.name}, shopify product: {product.id}",
-			method="upload_erpnext_item",
-		)
-
-
 def _apply_metafields(product_id, metafields: list) -> None:
 	if not metafields:
 		return
@@ -651,7 +450,7 @@ def sync_items_and_price_to_shopify() -> None:
 	"""Scheduled trigger: enqueues the heavy sync work on the long queue (1500s timeout)."""
 	setting = frappe.get_doc(SETTING_DOCTYPE)
 
-	if not setting.is_enabled() or not setting.upload_erpnext_items:
+	if not setting.is_enabled():
 		return
 
 	if not need_to_run(SETTING_DOCTYPE, "inventory_sync_frequency", "last_item_sync"):
@@ -665,6 +464,36 @@ def sync_items_and_price_to_shopify() -> None:
 		job_id="shopify_sync_items_and_price",
 		deduplicate=True,
 	)
+
+
+@frappe.whitelist()
+def sync_item_to_shopify(ecommerce_item: str) -> dict:
+	"""Manually push one already-mapped item's current stock and price to
+	Shopify right now, instead of waiting for the scheduled job — the entry
+	point for the "Sync Now" button on Ecommerce Item.
+
+	This app does not create new Shopify products from ERPNext — `ecommerce_item`
+	must already be mapped to a real Shopify product (via Export/Import Item
+	Mapping or a prior sync).
+	"""
+	from ecommerce_integrations.shopify.inventory import push_single_item_to_shopify
+
+	ecom_doc = frappe.get_doc("Ecommerce Item", ecommerce_item)
+	if ecom_doc.integration != MODULE_NAME:
+		frappe.throw(_("Ecommerce Item {0} is not a Shopify integration record.").format(ecommerce_item))
+
+	setting = frappe.get_doc(SETTING_DOCTYPE)
+	if not setting.is_enabled():
+		frappe.throw(_("Shopify integration is not enabled."))
+
+	result = push_single_item_to_shopify(setting, ecom_doc)
+
+	ecom_doc.reload()
+	return {
+		"sync_status": ecom_doc.sync_status,
+		"sync_error": ecom_doc.sync_error,
+		"stock_result": result,
+	}
 
 
 def _fetch_product_with_retry(product_id: str, max_retries: int = 3):

@@ -40,10 +40,7 @@
   "max_retry_limit",
   "is_old_data_migrated",
   "publishing_section",
-  "upload_erpnext_items",
   "sync_images_to_amazon",
-  "publish_items",
-  "backfill_asins",
   "column_break_5",
   "update_erpnext_stock_levels_to_amazon",
   "inventory_sync_frequency",
@@ -278,37 +275,14 @@
    "collapsible": 1,
    "fieldname": "publishing_section",
    "fieldtype": "Section Break",
-   "label": "Publishing"
+   "label": "Sync"
   },
   {
    "default": "0",
-   "description": "Automatically publish new/updated Items (that have 'Publish on Amazon' checked and Amazon Product Type set) as listings on Amazon.",
-   "fieldname": "upload_erpnext_items",
-   "fieldtype": "Check",
-   "label": "Upload ERPNext Items to Amazon"
-  },
-  {
-   "default": "0",
-   "description": "Include images when publishing/updating listings — Item.image as the main image, all other Item attachments (in order) as secondary images (max 8). Requires the site to be reachable on the public internet at the URL configured in Website Settings, since Amazon fetches images by URL rather than accepting file uploads.",
+   "description": "Include images when syncing stock/price — Item.image as the main image, all other Item attachments (in order) as secondary images (max 8). Requires the site to be reachable on the public internet at the URL configured in Website Settings, since Amazon fetches images by URL rather than accepting file uploads.",
    "fieldname": "sync_images_to_amazon",
    "fieldtype": "Check",
    "label": "Sync Images to Amazon"
-  },
-  {
-   "depends_on": "eval: !doc.__islocal && doc.is_active",
-   "description": "Publish/update all eligible Items now (Publish on Amazon checked, Amazon Product Type set).",
-   "fieldname": "publish_items",
-   "fieldtype": "Button",
-   "label": "Publish Items Now",
-   "options": "publish_items_now"
-  },
-  {
-   "depends_on": "eval: !doc.__islocal && doc.is_active",
-   "description": "Check Amazon for ASINs assigned to listings still showing 'Pending ASIN'.",
-   "fieldname": "backfill_asins",
-   "fieldtype": "Button",
-   "label": "Backfill ASINs Now",
-   "options": "backfill_asins_now"
   },
   {
    "fieldname": "column_break_5",

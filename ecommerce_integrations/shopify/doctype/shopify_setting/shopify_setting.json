@@ -38,6 +38,7 @@
   "sync_sales_invoice",
   "add_shipping_as_item",
   "consolidate_taxes",
+  "submit_sales_order",
   "section_break_22",
   "html_16",
   "taxes",
@@ -46,12 +47,7 @@
   "column_break_qibo",
   "default_shipping_charges_account",
   "erpnext_to_shopify_sync_section",
-  "upload_erpnext_items",
   "price_list",
-  "update_shopify_item_on_update",
-  "column_break_34",
-  "sync_new_item_as_active",
-  "upload_variants_as_items",
   "shopify_field_mapping",
   "inventory_sync_section",
   "warehouse",
@@ -285,28 +281,14 @@
   {
    "fieldname": "erpnext_to_shopify_sync_section",
    "fieldtype": "Section Break",
-   "label": "ERPNext to Shopify Sync"
+   "label": "Sync"
   },
   {
-   "default": "0",
-   "fieldname": "upload_erpnext_items",
-   "fieldtype": "Check",
-   "label": "Upload new ERPNext Items to Shopify"
-  },
-  {
-   "depends_on": "eval:doc.upload_erpnext_items",
-   "description": "Price list used to fetch item rates when uploading items to Shopify",
+   "description": "Price list used to fetch item rates when syncing stock/price to already-mapped Shopify items",
    "fieldname": "price_list",
    "fieldtype": "Link",
    "label": "Price List",
    "options": "Price List"
-  },
-  {
-   "default": "0",
-   "depends_on": "eval:doc.upload_erpnext_items",
-   "fieldname": "update_shopify_item_on_update",
-   "fieldtype": "Check",
-   "label": "Update Shopify Item after updating ERPNext item"
   },
   {
    "depends_on": "eval:doc.update_erpnext_stock_levels_to_shopify",
@@ -393,24 +375,6 @@
    "read_only": 1
   },
   {
-   "fieldname": "column_break_34",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "0",
-   "description": "Caution: Only 3 attributes will be accepted by Shopify",
-   "fieldname": "upload_variants_as_items",
-   "fieldtype": "Check",
-   "label": "Upload ERPNext Variants as Shopify Items"
-  },
-  {
-   "default": "0",
-   "fieldname": "sync_new_item_as_active",
-   "fieldtype": "Check",
-   "label": "Sync New Items as Active"
-  },
-  {
-   "depends_on": "eval:doc.upload_erpnext_items",
    "description": "Map ERPNext Item fields to Shopify product fields, variant fields, or metafields (metafield:namespace.key)",
    "fieldname": "shopify_field_mapping",
    "fieldtype": "Table",
@@ -437,6 +401,13 @@
    "fieldname": "consolidate_taxes",
    "fieldtype": "Check",
    "label": "Consolidate Taxes in Order"
+  },
+  {
+   "default": "0",
+   "description": "If unchecked, Sales Orders are saved as Draft so you can review and adjust before submitting.",
+   "fieldname": "submit_sales_order",
+   "fieldtype": "Check",
+   "label": "Auto Submit Sales Order"
   },
   {
    "description": "When no sales tax mapping is found this tax account will be used as the default account. This is only applied for Sales Tax. Any shipping related charges still need to be mapped separately.",

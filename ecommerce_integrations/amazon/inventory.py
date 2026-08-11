@@ -15,6 +15,7 @@ from ecommerce_integrations.controllers.inventory import update_inventory_sync_s
 from ecommerce_integrations.controllers.scheduling import need_to_run
 
 FULFILLMENT_CHANNEL_CODE = "DEFAULT"  # seller-fulfilled; Amazon FBA listings ignore this feed
+ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD = "amazon_product_type"
 
 
 def update_inventory_on_amazon() -> None:
@@ -95,40 +96,18 @@ def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 			sku = d.integration_item_code or d.item_code
 
 			try:
-				product_type = frappe.db.get_value("Item", d.item_code, "amazon_product_type")
+				product_type = frappe.db.get_value(
+					"Ecommerce Item", d.ecom_item, ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD
+				)
 				if not product_type:
 					raise SPAPIError(
 						error="missing_product_type",
-						error_description=f"Item {d.item_code} has no Amazon Product Type set.",
+						error_description=f"Ecommerce Item {d.ecom_item} has no Amazon Product Type set.",
 					)
-
-				patches = [
-					{
-						"op": "replace",
-						"path": "/attributes/fulfillment_availability",
-						"value": [
-							{
-								"fulfillment_channel_code": FULFILLMENT_CHANNEL_CODE,
-								"quantity": available_qty,
-							}
-						],
-					}
-				]
 
 				price = setting.get_item_price(d.item_code)
-				if price:
-					patches.append(
-						{
-							"op": "replace",
-							"path": "/attributes/purchasable_offer",
-							"value": [
-								{
-									"currency": currency,
-									"our_price": [{"schedule": [{"value_with_tax": price}]}],
-								}
-							],
-						}
-					)
+				patches = _build_stock_price_patches(available_qty, price, currency)
+				patches += _build_image_patches(setting, d.item_code)
 
 				listings_api.patch_listing_item(sku=sku, product_type=product_type, patches=patches)
 				update_inventory_sync_status(d.ecom_item, time=synced_on, status="Synced")
@@ -155,6 +134,115 @@ def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 			frappe.db.commit()
 
 		_log_inventory_update_status(inventory_sync_batch)
+
+
+def push_single_item_to_amazon(setting, ecom_doc) -> str:
+	"""Push one Ecommerce Item's current stock, price, and images (if enabled)
+	to Amazon right now — used by the "Sync Now" button, bypassing the "did
+	it change since last sync" watermark the scheduled job uses.
+	"""
+	item_code = ecom_doc.erpnext_item_code
+	product_type = ecom_doc.get(ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD)
+	if not product_type:
+		frappe.throw(f"Ecommerce Item {ecom_doc.name} has no Amazon Product Type set.")
+
+	warehouses = setting.get_merged_warehouses()
+	if not warehouses:
+		return "skipped (no warehouses configured in Amazon SP API Settings)"
+
+	Bin = DocType("Bin")
+	bin_totals = (
+		frappe.qb.from_(Bin)
+		.select(Sum(Bin.actual_qty).as_("actual_qty"), Sum(Bin.reserved_qty).as_("reserved_qty"))
+		.where((Bin.item_code == item_code) & (Bin.warehouse.isin(warehouses)))
+		.run(as_dict=True)
+	)
+	actual_qty = (bin_totals[0].actual_qty if bin_totals else 0) or 0
+	reserved_qty = (bin_totals[0].reserved_qty if bin_totals else 0) or 0
+	available_qty = max(cint(actual_qty) - cint(reserved_qty), 0)
+
+	repo = AmazonRepository(setting)
+	listings_api = repo.get_listings_items_instance()
+	currency = frappe.db.get_value("Price List", setting.price_list, "currency") or "USD"
+	price = setting.get_item_price(item_code)
+	sku = ecom_doc.sku or item_code
+
+	patches = _build_stock_price_patches(available_qty, price, currency)
+	patches += _build_image_patches(setting, item_code)
+
+	listings_api.patch_listing_item(sku=sku, product_type=product_type, patches=patches)
+	update_inventory_sync_status(ecom_doc.name, time=now(), status="Synced")
+
+	return f"pushed (actual_qty={actual_qty}, reserved_qty={reserved_qty})"
+
+
+def _build_stock_price_patches(available_qty, price, currency) -> list:
+	patches = [
+		{
+			"op": "replace",
+			"path": "/attributes/fulfillment_availability",
+			"value": [{"fulfillment_channel_code": FULFILLMENT_CHANNEL_CODE, "quantity": available_qty}],
+		}
+	]
+	if price:
+		patches.append(
+			{
+				"op": "replace",
+				"path": "/attributes/purchasable_offer",
+				"value": [{"currency": currency, "our_price": [{"schedule": [{"value_with_tax": price}]}]}],
+			}
+		)
+	return patches
+
+
+def _build_image_patches(setting, item_code: str) -> list:
+	"""Item.image -> main_product_image_locator; every other File attachment
+	on the Item (in creation order) -> other_product_image_locator_1..8.
+
+	Only included if 'Sync Images to Amazon' is enabled in settings. Amazon
+	fetches images by URL rather than accepting uploads, so this only works
+	if the site is reachable on the public internet at the URL
+	`frappe.utils.get_url()` resolves to (its configured host_name).
+	"""
+	if not setting.get("sync_images_to_amazon"):
+		return []
+
+	image = frappe.db.get_value("Item", item_code, "image")
+	site_url = frappe.utils.get_url()
+	patches = []
+
+	if image:
+		patches.append(
+			{
+				"op": "replace",
+				"path": "/attributes/main_product_image_locator",
+				"value": [{"media_location": f"{site_url}{image}"}],
+			}
+		)
+
+	other_files = frappe.get_all(
+		"File",
+		filters={
+			"attached_to_doctype": "Item",
+			"attached_to_name": item_code,
+			"file_url": ["!=", image or ""],
+			"is_private": 0,
+		},
+		fields=["file_url"],
+		order_by="creation asc",
+		limit=8,
+	)
+
+	for idx, file_row in enumerate(other_files, start=1):
+		patches.append(
+			{
+				"op": "replace",
+				"path": f"/attributes/other_product_image_locator_{idx}",
+				"value": [{"media_location": f"{site_url}{file_row.file_url}"}],
+			}
+		)
+
+	return patches
 
 
 def _log_inventory_update_status(inventory_levels) -> None:

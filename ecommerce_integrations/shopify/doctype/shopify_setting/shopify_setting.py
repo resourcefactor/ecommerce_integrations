@@ -18,7 +18,6 @@ from ecommerce_integrations.shopify.constants import (
 	ADDRESS_ID_FIELD,
 	CUSTOMER_ID_FIELD,
 	FULLFILLMENT_ID_FIELD,
-	ITEM_PUBLISH_FIELD,
 	ITEM_SELLING_RATE_FIELD,
 	MODULE_NAME,
 	ORDER_ID_FIELD,
@@ -380,39 +379,6 @@ class ShopifySetting(SettingController):
 		return {"created": created, "skipped": skipped, "errors": errors}
 
 	@frappe.whitelist()
-	def sync_items_to_shopify(self):
-		from ecommerce_integrations.shopify.utils import create_shopify_log
-
-		items = frappe.get_all(
-			"Item",
-			filters={ITEM_PUBLISH_FIELD: 1, "disabled": 0, "has_variants": 0},
-			pluck="name",
-		)
-		enqueued = 0
-		errors = 0
-		for item_code in items:
-			try:
-				if frappe.db.exists("Ecommerce Item", {"erpnext_item_code": item_code, "integration": MODULE_NAME}):
-					continue
-				frappe.enqueue(
-					"ecommerce_integrations.shopify.product.upload_erpnext_item",
-					doc=frappe.get_doc("Item", item_code),
-					queue="long",
-				)
-				enqueued += 1
-			except Exception as e:
-				errors += 1
-				create_shopify_log(
-					status="Error",
-					message=f"Failed to queue {item_code} for Shopify sync: {e}",
-					method="sync_items_to_shopify",
-				)
-		msg = _("{0} item(s) queued for Shopify sync.").format(enqueued)
-		if errors:
-			msg += " " + _("{0} error(s) — check Ecommerce Integration Log.").format(errors)
-		return msg
-
-	@frappe.whitelist()
 	@connection.temp_shopify_session
 	def sync_price_to_shopify(self):
 		from shopify.resources import Variant
@@ -454,15 +420,6 @@ class ShopifySetting(SettingController):
 
 def setup_custom_fields():
 	custom_fields = {
-		"Item": [
-			dict(
-				fieldname=ITEM_PUBLISH_FIELD,
-				label="Publish on Website",
-				fieldtype="Check",
-				insert_after="standard_rate",
-				default=0,
-			)
-		],
 		"Customer": [
 			dict(
 				fieldname=CUSTOMER_ID_FIELD,
