@@ -6,16 +6,32 @@ from collections import Counter
 import frappe
 from frappe.query_builder import DocType
 from frappe.query_builder.functions import Coalesce, Max, Sum
-from frappe.utils import cint, create_batch, now
+from frappe.utils import add_to_date, cint, create_batch, get_datetime, now
 
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_repository import AmazonRepository
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api import SPAPIError
 from ecommerce_integrations.amazon.utils import MODULE_NAME, SETTING_DOCTYPE, create_amazon_log
 from ecommerce_integrations.controllers.inventory import update_inventory_sync_status
-from ecommerce_integrations.controllers.scheduling import need_to_run
 
 FULFILLMENT_CHANNEL_CODE = "DEFAULT"  # seller-fulfilled; Amazon FBA listings ignore this feed
 ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD = "amazon_product_type"
+
+
+def _due_for_inventory_sync(setting) -> bool:
+	"""Per-record equivalent of `controllers.scheduling.need_to_run` — that helper
+	only works for Single DocTypes (it reads/writes via the `Singles` table), but
+	Amazon SP API Settings can have multiple records, so each one needs its own
+	watermark read/write against its own `last_inventory_sync` field instead.
+	"""
+	interval = cint(setting.inventory_sync_frequency) or 10
+
+	if setting.last_inventory_sync and get_datetime() < get_datetime(
+		add_to_date(setting.last_inventory_sync, minutes=interval)
+	):
+		return False
+
+	frappe.db.set_value(SETTING_DOCTYPE, setting.name, "last_inventory_sync", now(), update_modified=False)
+	return True
 
 
 def update_inventory_on_amazon() -> None:
@@ -30,7 +46,7 @@ def update_inventory_on_amazon() -> None:
 		if not setting.is_enabled() or not setting.update_erpnext_stock_levels_to_amazon:
 			continue
 
-		if not need_to_run(setting_name, "inventory_sync_frequency", "last_inventory_sync"):
+		if not _due_for_inventory_sync(setting):
 			continue
 
 		warehouses = setting.get_merged_warehouses()

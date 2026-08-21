@@ -379,6 +379,30 @@ class ShopifySetting(SettingController):
 		return {"created": created, "skipped": skipped, "errors": errors}
 
 	@frappe.whitelist()
+	def sync_orders_now(self):
+		"""Fetch orders in the configured date range right away, in the background,
+		instead of waiting for the hourly cron / 'Sync Old Orders' checkbox."""
+		from ecommerce_integrations.shopify.order import sync_orders_now
+
+		if not self.old_orders_from or not self.old_orders_to:
+			frappe.throw(_("Please set Old Orders From and Old Orders To first."))
+
+		job_name = "Sync Shopify Orders Now"
+		if frappe.db.get_all("RQ Job", {"job_name": job_name, "status": ["in", ["queued", "started"]]}):
+			frappe.msgprint(_("Orders are already being synced in the background."))
+			return
+
+		frappe.enqueue(
+			job_name=job_name,
+			method=sync_orders_now,
+			queue="long",
+			timeout=4000,
+			from_time=self.old_orders_from,
+			to_time=self.old_orders_to,
+		)
+		frappe.msgprint(_("Orders will be synced in the background. Check View Logs for progress."))
+
+	@frappe.whitelist()
 	@connection.temp_shopify_session
 	def sync_price_to_shopify(self):
 		from shopify.resources import Variant

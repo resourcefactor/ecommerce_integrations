@@ -26,9 +26,6 @@ frappe.ui.form.on("Shopify Setting", {
 	},
 
 	refresh: function (frm) {
-		frm.add_custom_button(__("Import Products"), function () {
-			frappe.set_route("shopify-import-products");
-		});
 		frm.add_custom_button(__("View Logs"), () => {
 			frappe.set_route("List", "Ecommerce Integration Log", {
 				integration: "Shopify",
@@ -43,6 +40,17 @@ frappe.ui.form.on("Shopify Setting", {
 				},
 			});
 		});
+		frm.add_custom_button(__("Sync Orders Now"), function () {
+			frappe.call({
+				doc: frm.doc,
+				method: "sync_orders_now",
+				freeze: true,
+				freeze_message: __("Queuing order sync..."),
+				callback: (r) => {
+					if (!r.exc) frappe.msgprint(r.message);
+				},
+			});
+		}, __("Shopify"));
 		frm.add_custom_button(__("Export Shopify Products"), function () {
 			frappe.show_alert({ message: __("Fetching products from Shopify..."), indicator: "blue" });
 			frappe.call({

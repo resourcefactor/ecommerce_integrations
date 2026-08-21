@@ -403,21 +403,33 @@ def cancel_order(payload, request_id=None):
 
 @temp_shopify_session
 def sync_old_orders():
+	"""Called via hourly cron. Only runs when the 'Sync Old Orders' checkbox is enabled."""
 	shopify_setting = frappe.get_cached_doc(SETTING_DOCTYPE)
 	if not cint(shopify_setting.sync_old_orders):
 		return
 
-	orders = _fetch_old_orders(shopify_setting.old_orders_from, shopify_setting.old_orders_to)
+	_sync_orders_in_range(shopify_setting.old_orders_from, shopify_setting.old_orders_to)
+
+	shopify_setting = frappe.get_doc(SETTING_DOCTYPE)
+	shopify_setting.sync_old_orders = 0
+	shopify_setting.save()
+
+
+@temp_shopify_session
+def sync_orders_now(from_time, to_time):
+	"""Fetch orders in the given range immediately, bypassing the 'Sync Old Orders' checkbox
+	and the hourly cron. Used by the "Sync Orders Now" button on Shopify Setting."""
+	_sync_orders_in_range(from_time, to_time)
+
+
+def _sync_orders_in_range(from_time, to_time):
+	orders = _fetch_old_orders(from_time, to_time)
 
 	for order in orders:
 		log = create_shopify_log(
 			method=EVENT_MAPPER["orders/create"], request_data=json.dumps(order), make_new=True
 		)
 		sync_sales_order(order, request_id=log.name)
-
-	shopify_setting = frappe.get_doc(SETTING_DOCTYPE)
-	shopify_setting.sync_old_orders = 0
-	shopify_setting.save()
 
 
 def _fetch_old_orders(from_time, to_time):

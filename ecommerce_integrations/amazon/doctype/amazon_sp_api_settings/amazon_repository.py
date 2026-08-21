@@ -511,7 +511,18 @@ class AmazonRepository:
 				break
 
 			for order in orders_list:
-				sales_order = self.create_sales_order(order)
+				order_id = order.get("AmazonOrderId")
+				try:
+					sales_order = self.create_sales_order(order)
+					frappe.db.commit()
+				except Exception:
+					frappe.db.rollback()
+					frappe.log_error(
+						title=f"Amazon order sync failed: {order_id}",
+						message=frappe.get_traceback(),
+					)
+					continue
+
 				if sales_order:
 					sales_orders.append(sales_order)
 
