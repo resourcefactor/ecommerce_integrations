@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Frappe and contributors
 # For license information, please see LICENSE
 
+import urllib.parse
 from collections import Counter
 
 import frappe
@@ -84,6 +85,7 @@ def get_amazon_inventory_and_price_changes(warehouses: list[str], price_list: st
 		.select(
 			EcommerceItem.name.as_("ecom_item"),
 			Bin.item_code.as_("item_code"),
+			EcommerceItem.sku,
 			EcommerceItem.integration_item_code,
 			EcommerceItem.variant_id,
 			Sum(Bin.actual_qty).as_("actual_qty"),
@@ -100,16 +102,52 @@ def get_amazon_inventory_and_price_changes(warehouses: list[str], price_list: st
 	return query.run(as_dict=1)
 
 
-def fetch_amazon_product_type(listings_api, sku: str) -> str | None:
-	"""Look up the product type Amazon has on file for an already-published SKU,
-	via the Listings Items API (`summaries[].productType`). Used to backfill
-	`amazon_product_type` on Ecommerce Item when it wasn't set at mapping time —
-	Amazon requires a product type on every listing patch, even just to push
-	stock/price to an existing listing.
+def fetch_amazon_listing_data(listings_api, sku: str, need_product_type: bool, need_fba_check: bool) -> dict:
+	"""One GET to the Listings Items API, requesting only the sections needed:
+	`summaries` to backfill `amazon_product_type` when it wasn't set at mapping
+	time (Amazon requires a product type on every listing patch), and/or
+	`fulfillmentAvailability` to detect whether Amazon currently fulfills this
+	SKU (FBA) rather than the seller (FBM).
+
+	`is_fba` is re-derived on every call — never cached beyond the
+	`Ecommerce Item.is_fba` field it's written into — so a SKU flipping
+	between FBA and FBM on Amazon's side is picked up automatically on its
+	next sync. Anything other than an explicit `DEFAULT` (seller-fulfilled)
+	channel code — including an empty/missing list — is treated as FBA, so we
+	default to *not* pushing stock when the response is ambiguous: a skipped
+	FBM push is a real miss, but a skipped FBA push is a no-op anyway.
 	"""
-	data = listings_api.get_listing_item(sku=sku, included_data=["summaries"])
-	summaries = data.get("summaries") or []
-	return summaries[0].get("productType") if summaries else None
+	included_data = []
+	if need_product_type:
+		included_data.append("summaries")
+	if need_fba_check:
+		included_data.append("fulfillmentAvailability")
+
+	data = listings_api.get_listing_item(sku=sku, included_data=included_data)
+
+	result = {}
+	if need_product_type:
+		summaries = data.get("summaries") or []
+		result["product_type"] = summaries[0].get("productType") if summaries else None
+	if need_fba_check:
+		channels = data.get("fulfillmentAvailability") or []
+		result["is_fba"] = not any(c.get("fulfillmentChannelCode") == FULFILLMENT_CHANNEL_CODE for c in channels)
+
+	return result
+
+
+def _log_fba_transition(ecom_item: str, is_fba: bool, was_fba) -> None:
+	"""Record an FBA<->FBM flip as a Comment — `frappe.db.set_value`/`db_set`
+	don't create a Version log entry, so without this, an auto-detected
+	transition on this user-overridable field would leave no trace at all.
+	"""
+	if cint(is_fba) == cint(was_fba):
+		return
+	frappe.get_doc("Ecommerce Item", ecom_item).add_comment(
+		"Info",
+		f"Amazon fulfillment channel auto-detected as {'FBA' if is_fba else 'FBM'} "
+		f"during sync (was {'FBA' if was_fba else 'FBM'}).",
+	)
 
 
 def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
@@ -121,14 +159,17 @@ def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 	for inventory_sync_batch in create_batch(inventory_levels, 50):
 		for d in inventory_sync_batch:
 			available_qty = max(cint(d.actual_qty) - cint(d.reserved_qty), 0)
-			sku = d.integration_item_code or d.item_code
+			sku = d.sku or d.item_code
 
 			try:
-				product_type = frappe.db.get_value(
-					"Ecommerce Item", d.ecom_item, ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD
+				product_type, was_fba = frappe.db.get_value(
+					"Ecommerce Item", d.ecom_item, [ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD, "is_fba"]
 				)
-				if not product_type:
-					product_type = fetch_amazon_product_type(listings_api, sku)
+				need_product_type = not product_type
+				listing_data = fetch_amazon_listing_data(listings_api, sku, need_product_type, True)
+
+				if need_product_type:
+					product_type = listing_data.get("product_type")
 					if not product_type:
 						raise SPAPIError(
 							error="missing_product_type",
@@ -145,11 +186,16 @@ def upload_inventory_data_to_amazon(setting, inventory_levels) -> None:
 						update_modified=False,
 					)
 
+				is_fba = listing_data["is_fba"]
+				frappe.db.set_value("Ecommerce Item", d.ecom_item, "is_fba", cint(is_fba), update_modified=False)
+				_log_fba_transition(d.ecom_item, is_fba, was_fba)
+
 				price = setting.get_item_price(d.item_code)
-				patches = _build_stock_price_patches(available_qty, price, currency)
+				patches = _build_stock_price_patches(available_qty, price, currency, skip_stock=is_fba)
 				patches += _build_image_patches(setting, d.item_code)
 
-				listings_api.patch_listing_item(sku=sku, product_type=product_type, patches=patches)
+				if patches:
+					listings_api.patch_listing_item(sku=sku, product_type=product_type, patches=patches)
 				update_inventory_sync_status(d.ecom_item, time=synced_on, status="Synced")
 				d.status = "Success"
 			except SPAPIError as e:
@@ -193,14 +239,22 @@ def push_single_item_to_amazon(setting, ecom_doc) -> str:
 	listings_api = repo.get_listings_items_instance()
 
 	product_type = ecom_doc.get(ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD)
-	if not product_type:
-		product_type = fetch_amazon_product_type(listings_api, sku)
+	need_product_type = not product_type
+	listing_data = fetch_amazon_listing_data(listings_api, sku, need_product_type, True)
+
+	if need_product_type:
+		product_type = listing_data.get("product_type")
 		if not product_type:
 			frappe.throw(
 				f"Ecommerce Item {ecom_doc.name} has no Amazon Product Type set, and it "
 				f"could not be auto-fetched from Amazon (SKU {sku} may not be listed yet)."
 			)
 		ecom_doc.db_set(ECOMMERCE_ITEM_PRODUCT_TYPE_FIELD, product_type, update_modified=False)
+
+	is_fba = listing_data["is_fba"]
+	was_fba = ecom_doc.get("is_fba")
+	ecom_doc.db_set("is_fba", cint(is_fba), update_modified=False)
+	_log_fba_transition(ecom_doc.name, is_fba, was_fba)
 
 	warehouses = setting.get_merged_warehouses()
 	if not warehouses:
@@ -220,23 +274,31 @@ def push_single_item_to_amazon(setting, ecom_doc) -> str:
 	currency = frappe.db.get_value("Price List", setting.price_list, "currency") or "USD"
 	price = setting.get_item_price(item_code)
 
-	patches = _build_stock_price_patches(available_qty, price, currency)
+	patches = _build_stock_price_patches(available_qty, price, currency, skip_stock=is_fba)
 	patches += _build_image_patches(setting, item_code)
 
-	listings_api.patch_listing_item(sku=sku, product_type=product_type, patches=patches)
+	if patches:
+		listings_api.patch_listing_item(sku=sku, product_type=product_type, patches=patches)
 	update_inventory_sync_status(ecom_doc.name, time=now(), status="Synced")
 
-	return f"pushed (actual_qty={actual_qty}, reserved_qty={reserved_qty})"
+	if is_fba and not patches:
+		return "skipped (FBA item — stock not pushed; no price to sync either)"
+	elif is_fba:
+		return "price synced; stock skipped (FBA — Amazon manages this SKU's inventory)"
+	else:
+		return f"pushed (actual_qty={actual_qty}, reserved_qty={reserved_qty})"
 
 
-def _build_stock_price_patches(available_qty, price, currency) -> list:
-	patches = [
-		{
-			"op": "replace",
-			"path": "/attributes/fulfillment_availability",
-			"value": [{"fulfillment_channel_code": FULFILLMENT_CHANNEL_CODE, "quantity": available_qty}],
-		}
-	]
+def _build_stock_price_patches(available_qty, price, currency, skip_stock: bool = False) -> list:
+	patches = []
+	if not skip_stock:
+		patches.append(
+			{
+				"op": "replace",
+				"path": "/attributes/fulfillment_availability",
+				"value": [{"fulfillment_channel_code": FULFILLMENT_CHANNEL_CODE, "quantity": available_qty}],
+			}
+		)
 	if price:
 		patches.append(
 			{
@@ -269,7 +331,7 @@ def _build_image_patches(setting, item_code: str) -> list:
 			{
 				"op": "replace",
 				"path": "/attributes/main_product_image_locator",
-				"value": [{"media_location": f"{site_url}{image}"}],
+				"value": [{"media_location": f"{site_url}{_encode_file_url(image)}"}],
 			}
 		)
 
@@ -291,17 +353,25 @@ def _build_image_patches(setting, item_code: str) -> list:
 			{
 				"op": "replace",
 				"path": f"/attributes/other_product_image_locator_{idx}",
-				"value": [{"media_location": f"{site_url}{file_row.file_url}"}],
+				"value": [{"media_location": f"{site_url}{_encode_file_url(file_row.file_url)}"}],
 			}
 		)
 
 	return patches
 
 
+def _encode_file_url(file_url: str) -> str:
+	"""Percent-encode a Frappe file_url's path segments (e.g. spaces in the
+	filename) so the resulting media URL is valid for Amazon's image crawler
+	to fetch — a raw space in the URL gets rejected outright.
+	"""
+	return urllib.parse.quote(file_url, safe="/")
+
+
 def _log_inventory_update_status(inventory_levels) -> None:
 	log_message = "sku,item_code,status,failure_reason\n"
 	log_message += "\n".join(
-		f"{d.integration_item_code or d.item_code},{d.item_code},{d.status},{d.failure_reason or ''}"
+		f"{d.sku or d.item_code},{d.item_code},{d.status},{d.failure_reason or ''}"
 		for d in inventory_levels
 	)
 

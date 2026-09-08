@@ -193,6 +193,21 @@ def setup_custom_fields():
 					"set this once per mapped item."
 				),
 			),
+			dict(
+				fieldname="is_fba",
+				label="Fulfilled by Amazon (FBA)",
+				fieldtype="Check",
+				default="0",
+				insert_after="amazon_product_type",
+				depends_on="eval:doc.integration == 'Amazon'",
+				description=(
+					"Auto-detected from Amazon on every sync (manual 'Sync Now' or the "
+					"scheduled job). When checked, stock is NOT pushed for this SKU — "
+					"Amazon manages FBA inventory directly; price still syncs normally. "
+					"You can tick/untick this manually, but the next sync re-checks "
+					"Amazon and may overwrite it."
+				),
+			),
 		],
 	}
 

@@ -459,8 +459,31 @@ class AmazonRepository:
 			so.delivery_date = delivery_date
 			so.transaction_date = transaction_date
 			so.company = self.amz_setting.company
+			so.selling_price_list = self.amz_setting.price_list
+			so.ignore_pricing_rule = 1
 
 			for item in items:
+				if not item.get("rate"):
+					# Amazon omits ItemPrice for orders still in "Pending" status (payment/tax
+					# not finalized yet) — fall back to our own Amazon price list rather than
+					# letting ERPNext silently pull from the company's default price list.
+					item["rate"] = (
+						frappe.db.get_value(
+							"Item Price",
+							{
+								"item_code": item["item_code"],
+								"price_list": self.amz_setting.price_list,
+								"selling": 1,
+							},
+							"price_list_rate",
+						)
+						or 0
+					)
+				# Whatever the rate (Amazon's actual charged price, including any
+				# promo/special-offer price, or the fallback above), lock it in as-is —
+				# ignore_pricing_rule above stops pricing rules from touching it, and
+				# setting price_list_rate here stops ERPNext re-deriving it on save.
+				item["price_list_rate"] = item["rate"]
 				so.append("items", item)
 
 			taxes_and_charges = self.amz_setting.taxes_charges
