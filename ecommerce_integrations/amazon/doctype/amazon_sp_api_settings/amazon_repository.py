@@ -8,6 +8,7 @@ import urllib
 import dateutil
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api import (
 	SPAPI,
@@ -332,7 +333,9 @@ class AmazonRepository:
 							"item_code": self.get_item_code(order_item),
 							"item_name": order_item.get("SellerSKU"),
 							"description": order_item.get("Title"),
-							"rate": order_item.get("ItemPrice", {}).get("Amount", 0),
+							# ItemPrice is the price of the whole line (unit price x quantity)
+							"rate": flt(order_item.get("ItemPrice", {}).get("Amount", 0))
+							/ order_item.get("QuantityOrdered"),
 							"qty": order_item.get("QuantityOrdered"),
 							"stock_uom": "Nos",
 							"warehouse": warehouse,
@@ -446,8 +449,11 @@ class AmazonRepository:
 			if not items:
 				return
 
-			customer_name = create_customer(order)
-			create_address(order, customer_name)
+			# with a common customer, buyer addresses would pile up on it and become its default address
+			customer_name = self.amz_setting.get("customer")
+			if not customer_name:
+				customer_name = create_customer(order)
+				create_address(order, customer_name)
 
 			delivery_date = dateutil.parser.parse(order.get("LatestShipDate")).strftime("%Y-%m-%d")
 			transaction_date = dateutil.parser.parse(order.get("PurchaseDate")).strftime("%Y-%m-%d")

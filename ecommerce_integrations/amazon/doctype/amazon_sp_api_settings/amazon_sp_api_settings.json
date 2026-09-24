@@ -27,6 +27,7 @@
   "customer_group",
   "territory",
   "customer_type",
+  "customer",
   "market_place_account_group",
   "amazon_fields_map_section",
   "amazon_fields_map",
@@ -192,6 +193,13 @@
    "reqd": 1
   },
   {
+   "description": "If set, all Amazon orders are booked to this customer instead of creating a customer per buyer, so one Payment Entry can settle many orders.",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Common Customer",
+   "options": "Customer"
+  },
+  {
    "fieldname": "market_place_account_group",
    "fieldtype": "Link",
    "label": "Market Place Account Group",
@@ -331,7 +339,7 @@
   }
  ],
  "links": [],
- "modified": "2023-07-31 17:20:21.492153",
+ "modified": "2026-09-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Amazon",
  "name": "Amazon SP API Settings",
