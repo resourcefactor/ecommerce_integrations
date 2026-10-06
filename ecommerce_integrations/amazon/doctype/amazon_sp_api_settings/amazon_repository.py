@@ -328,18 +328,26 @@ class AmazonRepository:
 
 			for order_item in order_items_list:
 				if order_item.get("QuantityOrdered") > 0:
+					qty = order_item.get("QuantityOrdered")
+					# ItemPrice is the pre-discount price of the whole line (unit price x
+					# quantity); PromotionDiscount is also a line total. Subtract it to get
+					# what the buyer actually paid (handles special/promo-priced orders).
+					item_price = flt(order_item.get("ItemPrice", {}).get("Amount", 0))
+					promo_discount = flt(order_item.get("PromotionDiscount", {}).get("Amount", 0))
 					final_order_items.append(
 						{
 							"item_code": self.get_item_code(order_item),
 							"item_name": order_item.get("SellerSKU"),
 							"description": order_item.get("Title"),
-							# ItemPrice is the price of the whole line (unit price x quantity)
-							"rate": flt(order_item.get("ItemPrice", {}).get("Amount", 0))
-							/ order_item.get("QuantityOrdered"),
-							"qty": order_item.get("QuantityOrdered"),
+							"rate": (item_price - promo_discount) / qty,
+							"qty": qty,
 							"stock_uom": "Nos",
 							"warehouse": warehouse,
 							"conversion_factor": 1.0,
+							# Amazon omits ItemPrice entirely while the order is still
+							# "Pending" (payment/tax not finalized). Flag this so
+							# create_sales_order can defer instead of guessing.
+							"has_amazon_price": "ItemPrice" in order_item,
 						}
 					)
 
@@ -449,6 +457,13 @@ class AmazonRepository:
 			if not items:
 				return
 
+			if any(not item.get("has_amazon_price") for item in items):
+				# At least one line item's price hasn't been finalized by Amazon yet
+				# (order is typically still "Pending"). Skip for now rather than
+				# guessing with our own Item Price list — the next scheduled sync
+				# will retry once Amazon publishes the real charged price.
+				return
+
 			# with a common customer, buyer addresses would pile up on it and become its default address
 			customer_name = self.amz_setting.get("customer")
 			if not customer_name:
@@ -469,26 +484,11 @@ class AmazonRepository:
 			so.ignore_pricing_rule = 1
 
 			for item in items:
-				if not item.get("rate"):
-					# Amazon omits ItemPrice for orders still in "Pending" status (payment/tax
-					# not finalized yet) — fall back to our own Amazon price list rather than
-					# letting ERPNext silently pull from the company's default price list.
-					item["rate"] = (
-						frappe.db.get_value(
-							"Item Price",
-							{
-								"item_code": item["item_code"],
-								"price_list": self.amz_setting.price_list,
-								"selling": 1,
-							},
-							"price_list_rate",
-						)
-						or 0
-					)
-				# Whatever the rate (Amazon's actual charged price, including any
-				# promo/special-offer price, or the fallback above), lock it in as-is —
-				# ignore_pricing_rule above stops pricing rules from touching it, and
-				# setting price_list_rate here stops ERPNext re-deriving it on save.
+				item.pop("has_amazon_price")
+				# Lock in Amazon's actual charged price (net of any promo/special-offer
+				# discount) as-is — ignore_pricing_rule above stops pricing rules from
+				# touching it, and setting price_list_rate here stops ERPNext
+				# re-deriving it on save.
 				item["price_list_rate"] = item["rate"]
 				so.append("items", item)
 
