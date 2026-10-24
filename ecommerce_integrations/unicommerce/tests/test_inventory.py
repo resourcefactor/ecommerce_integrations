@@ -1,4 +1,3 @@
-from unittest.mock import patch
 
 import responses
 
@@ -20,9 +19,8 @@ class TestUnicommerceProduct(TestCaseApiClient):
 		super().setUpClass()
 		cls.items = ["_TestInventoryItemA", "_TestInventoryItemB", "_TestInventoryItemC"]
 
-		with patch("ecommerce_integrations.shopify.product.upload_erpnext_item"):
-			for item in cls.items:
-				make_item(item)
+		for item in cls.items:
+			make_item(item)
 
 		cls.ecom_items = [make_ecommerce_item(item) for item in cls.items]
 

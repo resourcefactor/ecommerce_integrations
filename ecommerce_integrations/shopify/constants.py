@@ -6,16 +6,18 @@ MODULE_NAME = "shopify"
 SETTING_DOCTYPE = "Shopify Setting"
 OLD_SETTINGS_DOCTYPE = "Shopify Settings"
 
-API_VERSION = "2024-01"
+API_VERSION = "2025-04"
 
+# GraphQL topic format (uppercase with underscores) for webhook registration
 WEBHOOK_EVENTS = [
-	"orders/create",
-	"orders/paid",
-	"orders/fulfilled",
-	"orders/cancelled",
-	"orders/partially_fulfilled",
+	"ORDERS_CREATE",
+	"ORDERS_PAID",
+	"ORDERS_FULFILLED",
+	"ORDERS_CANCELLED",
+	"ORDERS_PARTIALLY_FULFILLED",
 ]
 
+# Shopify sends X-Shopify-Topic header in REST format (lowercase/slash) even for GraphQL webhooks
 EVENT_MAPPER = {
 	"orders/create": "ecommerce_integrations.shopify.order.sync_sales_order",
 	"orders/paid": "ecommerce_integrations.shopify.invoice.prepare_sales_invoice",
@@ -37,7 +39,6 @@ SUPPLIER_ID_FIELD = "shopify_supplier_id"
 ADDRESS_ID_FIELD = "shopify_address_id"
 ORDER_ITEM_DISCOUNT_FIELD = "shopify_item_discount"
 ITEM_SELLING_RATE_FIELD = "shopify_selling_rate"
-ITEM_PUBLISH_FIELD = "publish_on_website"
 
 # ERPNext already defines the default UOMs from Shopify but names are different
 WEIGHT_TO_ERPNEXT_UOM_MAP = {"kg": "Kg", "g": "Gram", "oz": "Ounce", "lb": "Pound"}

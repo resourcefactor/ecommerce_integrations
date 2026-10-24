@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "creation": "2021-04-20 15:32:47.231689",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -14,7 +15,9 @@
   "variant_id",
   "variant_of",
   "inventory_synced_on",
-  "item_synced_on"
+  "item_synced_on",
+  "sync_status",
+  "sync_error"
  ],
  "fields": [
   {
@@ -91,11 +94,26 @@
    "fieldtype": "Datetime",
    "label": "Item Data Synced On",
    "read_only": 1
+  },
+  {
+   "fieldname": "sync_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Sync Status",
+   "options": "\nSynced\nNot Found\nTracking Disabled\nError\nPending ASIN",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_error",
+   "fieldtype": "Small Text",
+   "label": "Sync Error",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2022-11-15 11:36:04.733227",
+ "modified": "2026-06-09 10:53:37.684577",
  "modified_by": "Administrator",
  "module": "Ecommerce Integrations",
  "name": "Ecommerce Item",
@@ -114,6 +132,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

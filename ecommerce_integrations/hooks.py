@@ -108,8 +108,6 @@ before_uninstall = "ecommerce_integrations.uninstall.before_uninstall"
 
 doc_events = {
 	"Item": {
-		"after_insert": "ecommerce_integrations.shopify.product.upload_erpnext_item",
-		"on_update": "ecommerce_integrations.shopify.product.upload_erpnext_item",
 		"validate": [
 			"ecommerce_integrations.utils.taxation.validate_tax_template",
 			"ecommerce_integrations.unicommerce.product.validate_item",
@@ -139,6 +137,7 @@ scheduler_events = {
 	"all": [
 		"ecommerce_integrations.shopify.inventory.update_inventory_on_shopify",
 		"ecommerce_integrations.shopify.product.sync_items_and_price_to_shopify",
+		"ecommerce_integrations.amazon.inventory.update_inventory_on_amazon",
 	],
 	"daily": [],
 	"daily_long": ["ecommerce_integrations.zenoti.doctype.zenoti_settings.zenoti_settings.sync_stocks"],

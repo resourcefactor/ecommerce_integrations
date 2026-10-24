@@ -1,6 +1,7 @@
 import frappe
 from frappe import _dict
-from frappe.query_builder.functions import Max, Sum
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Coalesce, Max, Sum
 from frappe.utils import now
 from frappe.utils.nestedset import get_descendants_of
 
@@ -76,12 +77,60 @@ def get_inventory_levels_of_group_warehouse(warehouse: str, integration: str):
 	return data
 
 
-def update_inventory_sync_status(ecommerce_item, time=None):
-	"""Update `inventory_synced_on` timestamp to specified time or current time (if not specified).
+def get_inventory_levels_aggregated(location_warehouse_map: dict, integration: str) -> list[_dict]:
+	"""Aggregate stock across multiple ERPNext warehouses per Shopify location.
 
-	After updating inventory levels to any integration, the Ecommerce Item should know about when it was last updated.
+	Args:
+		location_warehouse_map: {shopify_location_id: [warehouse1, warehouse2, ...]}
+		integration: integration name (e.g. "shopify")
+
+	Returns list of _dict with ecom_item, item_code, integration_item_code,
+	variant_id, actual_qty (summed), reserved_qty (summed), warehouse (= location_id).
 	"""
+	results = []
+
+	for location_id, warehouses in location_warehouse_map.items():
+		if not warehouses:
+			continue
+
+		EcommerceItem = DocType("Ecommerce Item")
+		Bin = DocType("Bin")
+
+		query = (
+			frappe.qb.from_(EcommerceItem)
+			.join(Bin)
+			.on(EcommerceItem.erpnext_item_code == Bin.item_code)
+			.select(
+				EcommerceItem.name.as_("ecom_item"),
+				Bin.item_code.as_("item_code"),
+				EcommerceItem.integration_item_code,
+				EcommerceItem.variant_id,
+				Sum(Bin.actual_qty).as_("actual_qty"),
+				Sum(Bin.reserved_qty).as_("reserved_qty"),
+			)
+			.where(
+				(Bin.warehouse.isin(warehouses))
+				& (EcommerceItem.integration == integration)
+			)
+			.groupby(EcommerceItem.erpnext_item_code)
+			.having(Max(Bin.modified) > Coalesce(Max(EcommerceItem.inventory_synced_on), "1970-01-01 00:00:00"))
+		)
+
+		rows = query.run(as_dict=1)
+		for row in rows:
+			# reuse warehouse field to carry the shopify location_id
+			row.warehouse = location_id
+		results.extend(rows)
+
+	return results
+
+
+def update_inventory_sync_status(ecommerce_item, time=None, status="Synced"):
+	"""Update `inventory_synced_on` timestamp and `sync_status` on Ecommerce Item."""
 	if time is None:
 		time = now()
 
-	frappe.db.set_value("Ecommerce Item", ecommerce_item, "inventory_synced_on", time)
+	values = {"inventory_synced_on": time, "sync_status": status}
+	if status == "Synced":
+		values["sync_error"] = ""
+	frappe.db.set_value("Ecommerce Item", ecommerce_item, values, update_modified=False)

@@ -9,17 +9,41 @@ import dateutil
 
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api import (
 	SPAPI,
 	CatalogItems,
 	Finances,
+	ListingsItems,
 	Orders,
 	SPAPIError,
 )
 from ecommerce_integrations.amazon.doctype.amazon_sp_api_settings.amazon_sp_api_settings import (
 	AmazonSPAPISettings,
 )
+
+
+def _truncate_to_column_length(meta, fieldname: str, value: str) -> str:
+	"""Amazon's Title/other text fields routinely exceed ERPNext's default
+	varchar column length (e.g. 140 for Data fields) — truncate rather than
+	let Item.insert() throw CharacterLengthExceededError and abort the whole
+	order sync over one long product title.
+	"""
+	df = meta.get_field(fieldname)
+	if not df:
+		return value
+
+	column_type = frappe.db.type_map.get(df.fieldtype, (None, None))[0]
+	if column_type != "varchar":
+		return value
+
+	max_length = frappe.utils.cint(df.get("length")) or frappe.utils.cint(
+		frappe.db.type_map.get(df.fieldtype, (None, 140))[1]
+	)
+	if max_length and len(value) > max_length:
+		return value[:max_length]
+	return value
 
 
 class AmazonRepository:
@@ -36,6 +60,7 @@ class AmazonRepository:
 			aws_access_key=self.amz_setting.aws_access_key,
 			aws_secret_key=self.amz_setting.get_password("aws_secret_key"),
 			country_code=self.amz_setting.country,
+			seller_id=self.amz_setting.seller_id,
 		)
 
 	def return_as_list(self, input) -> list:
@@ -156,24 +181,29 @@ class AmazonRepository:
 		return Orders(**self.instance_params)
 
 	def create_item(self, order_item) -> str:
+		def get_summary(amazon_item) -> dict:
+			summaries = amazon_item.get("summaries") or []
+			return summaries[0] if summaries else {}
+
 		def create_item_group(amazon_item) -> str:
-			item_group_name = amazon_item.get("AttributeSets")[0].get("ProductGroup")
+			summary = get_summary(amazon_item)
+			item_group_name = (summary.get("browseClassification") or {}).get("displayName")
 
-			if item_group_name:
-				item_group = frappe.db.get_value("Item Group", filters={"item_group_name": item_group_name})
+			if not item_group_name:
+				raise KeyError("browseClassification.displayName")
 
-				if not item_group:
-					new_item_group = frappe.new_doc("Item Group")
-					new_item_group.item_group_name = item_group_name
-					new_item_group.parent_item_group = self.amz_setting.parent_item_group
-					new_item_group.insert()
-					return new_item_group.item_group_name
-				return item_group
+			item_group = frappe.db.get_value("Item Group", filters={"item_group_name": item_group_name})
 
-			raise (KeyError("ProductGroup"))
+			if not item_group:
+				new_item_group = frappe.new_doc("Item Group")
+				new_item_group.item_group_name = item_group_name
+				new_item_group.parent_item_group = self.amz_setting.parent_item_group
+				new_item_group.insert()
+				return new_item_group.item_group_name
+			return item_group
 
 		def create_brand(amazon_item) -> str:
-			brand_name = amazon_item.get("AttributeSets")[0].get("Brand")
+			brand_name = get_summary(amazon_item).get("brand")
 
 			if not brand_name:
 				return
@@ -188,7 +218,7 @@ class AmazonRepository:
 			return existing_brand
 
 		def create_manufacturer(amazon_item) -> str:
-			manufacturer_name = amazon_item.get("AttributeSets")[0].get("Manufacturer")
+			manufacturer_name = get_summary(amazon_item).get("manufacturer")
 
 			if not manufacturer_name:
 				return
@@ -205,11 +235,12 @@ class AmazonRepository:
 			return existing_manufacturer
 
 		def create_item_price(amazon_item, item_code) -> None:
+			list_price = (amazon_item.get("attributes") or {}).get("list_price") or []
+			rate = list_price[0].get("value_with_tax") if list_price else 0
+
 			item_price = frappe.new_doc("Item Price")
 			item_price.price_list = self.amz_setting.price_list
-			item_price.price_list_rate = (
-				amazon_item.get("AttributeSets")[0].get("ListPrice", {}).get("Amount") or 0
-			)
+			item_price.price_list_rate = rate or 0
 			item_price.item_code = item_code
 			item_price.insert()
 
@@ -222,16 +253,20 @@ class AmazonRepository:
 			ecommerce_item.insert(ignore_permissions=True)
 
 		catalog_items = self.get_catalog_items_instance()
-		amazon_item = catalog_items.get_catalog_item(order_item["ASIN"])["payload"]
+		amazon_item = catalog_items.get_catalog_item(order_item["ASIN"])
 
 		item = frappe.new_doc("Item")
+		item_meta = frappe.get_meta("Item")
 
 		for field_map in self.amz_setting.amazon_fields_map:
 			if field_map.use_to_find_item_code:
 				item.item_code = order_item[field_map.amazon_field]
 
 			if field_map.item_field:
-				setattr(item, field_map.item_field, order_item[field_map.amazon_field])
+				value = order_item[field_map.amazon_field]
+				if isinstance(value, str):
+					value = _truncate_to_column_length(item_meta, field_map.item_field, value)
+				setattr(item, field_map.item_field, value)
 
 		item.item_group = create_item_group(amazon_item)
 		item.brand = create_brand(amazon_item)
@@ -244,6 +279,16 @@ class AmazonRepository:
 		return item.item_code
 
 	def get_item_code(self, order_item) -> str:
+		asin = order_item.get("ASIN")
+		if asin:
+			mapped_item_code = frappe.db.get_value(
+				"Ecommerce Item",
+				{"integration": "Amazon", "integration_item_code": asin},
+				"erpnext_item_code",
+			)
+			if mapped_item_code:
+				return mapped_item_code
+
 		for field_map in self.amz_setting.amazon_fields_map:
 			if field_map.use_to_find_item_code:
 				item_code = frappe.db.get_value(
@@ -284,16 +329,26 @@ class AmazonRepository:
 
 			for order_item in order_items_list:
 				if order_item.get("QuantityOrdered") > 0:
+					qty = order_item.get("QuantityOrdered")
+					# ItemPrice is the pre-discount price of the whole line (unit price x
+					# quantity); PromotionDiscount is also a line total. Subtract it to get
+					# what the buyer actually paid (handles special/promo-priced orders).
+					item_price = flt(order_item.get("ItemPrice", {}).get("Amount", 0))
+					promo_discount = flt(order_item.get("PromotionDiscount", {}).get("Amount", 0))
 					final_order_items.append(
 						{
 							"item_code": self.get_item_code(order_item),
 							"item_name": order_item.get("SellerSKU"),
 							"description": order_item.get("Title"),
-							"rate": order_item.get("ItemPrice", {}).get("Amount", 0),
-							"qty": order_item.get("QuantityOrdered"),
+							"rate": (item_price - promo_discount) / qty,
+							"qty": qty,
 							"stock_uom": "Nos",
 							"warehouse": warehouse,
 							"conversion_factor": 1.0,
+							# Amazon omits ItemPrice entirely while the order is still
+							# "Pending" (payment/tax not finalized). Flag this so
+							# create_sales_order can defer instead of guessing.
+							"has_amazon_price": "ItemPrice" in order_item,
 						}
 					)
 
@@ -399,8 +454,18 @@ class AmazonRepository:
 			if not items:
 				return
 
-			customer_name = create_customer(order)
-			create_address(order, customer_name)
+			if any(not item.get("has_amazon_price") for item in items):
+				# At least one line item's price hasn't been finalized by Amazon yet
+				# (order is typically still "Pending"). Skip for now rather than
+				# guessing with our own Item Price list — the next scheduled sync
+				# will retry once Amazon publishes the real charged price.
+				return
+
+			# with a common customer, buyer addresses would pile up on it and become its default address
+			customer_name = self.amz_setting.get("customer")
+			if not customer_name:
+				customer_name = create_customer(order)
+				create_address(order, customer_name)
 
 			delivery_date = dateutil.parser.parse(order.get("LatestShipDate")).strftime("%Y-%m-%d")
 			transaction_date = dateutil.parser.parse(order.get("PurchaseDate")).strftime("%Y-%m-%d")
@@ -412,8 +477,16 @@ class AmazonRepository:
 			so.delivery_date = delivery_date
 			so.transaction_date = transaction_date
 			so.company = self.amz_setting.company
+			so.selling_price_list = self.amz_setting.price_list
+			so.ignore_pricing_rule = 1
 
 			for item in items:
+				item.pop("has_amazon_price")
+				# Lock in Amazon's actual charged price (net of any promo/special-offer
+				# discount) as-is — ignore_pricing_rule above stops pricing rules from
+				# touching it, and setting price_list_rate here stops ERPNext
+				# re-deriving it on save.
+				item["price_list_rate"] = item["rate"]
 				so.append("items", item)
 
 			taxes_and_charges = self.amz_setting.taxes_charges
@@ -464,7 +537,18 @@ class AmazonRepository:
 				break
 
 			for order in orders_list:
-				sales_order = self.create_sales_order(order)
+				order_id = order.get("AmazonOrderId")
+				try:
+					sales_order = self.create_sales_order(order)
+					frappe.db.commit()
+				except Exception:
+					frappe.db.rollback()
+					frappe.log_error(
+						title=f"Amazon order sync failed: {order_id}",
+						message=frappe.get_traceback(),
+					)
+					continue
+
 				if sales_order:
 					sales_orders.append(sales_order)
 
@@ -481,6 +565,9 @@ class AmazonRepository:
 
 	def get_catalog_items_instance(self) -> CatalogItems:
 		return CatalogItems(**self.instance_params)
+
+	def get_listings_items_instance(self) -> ListingsItems:
+		return ListingsItems(**self.instance_params)
 
 
 def validate_amazon_sp_api_credentials(**args) -> None:

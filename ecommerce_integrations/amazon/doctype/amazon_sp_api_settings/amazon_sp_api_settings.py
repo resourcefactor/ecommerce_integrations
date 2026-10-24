@@ -134,6 +134,21 @@ class AmazonSPAPISettings(Document):
 		else:
 			frappe.msgprint(_("Please enable the Amazon SP API Settings {0}.").format(frappe.bold(self.name)))
 
+	def is_enabled(self) -> bool:
+		return bool(self.is_active)
+
+	def get_merged_warehouses(self) -> list[str]:
+		"""ERPNext warehouses whose stock is summed into one Amazon quantity per item."""
+		return list({row.erpnext_warehouse for row in self.amazon_warehouse_mapping if row.erpnext_warehouse})
+
+	def get_item_price(self, item_code):
+		if not self.price_list:
+			return None
+		return frappe.db.get_value(
+			"Item Price",
+			{"item_code": item_code, "price_list": self.price_list, "selling": 1},
+			"price_list_rate",
+		)
 
 # Called via a hook in every hour.
 def schedule_get_order_details():
@@ -151,6 +166,7 @@ def schedule_get_order_details():
 		get_orders(amz_setting_name=amz_setting.name, created_after=amz_setting.after_date)
 
 
+
 def setup_custom_fields():
 	custom_fields = {
 		"Sales Order": [
@@ -162,6 +178,36 @@ def setup_custom_fields():
 				read_only=1,
 				print_hide=1,
 			)
+		],
+		"Ecommerce Item": [
+			dict(
+				fieldname="amazon_product_type",
+				label="Amazon Product Type",
+				fieldtype="Data",
+				insert_after="sku",
+				depends_on="eval:doc.integration == 'Amazon'",
+				description=(
+					"Amazon product type/category code (from Amazon's Product Type "
+					"taxonomy, e.g. HEADPHONES). Required by Amazon's API for stock/"
+					"price sync (patch_listing_item) even on an existing listing — "
+					"set this once per mapped item."
+				),
+			),
+			dict(
+				fieldname="is_fba",
+				label="Fulfilled by Amazon (FBA)",
+				fieldtype="Check",
+				default="0",
+				insert_after="amazon_product_type",
+				depends_on="eval:doc.integration == 'Amazon'",
+				description=(
+					"Auto-detected from Amazon on every sync (manual 'Sync Now' or the "
+					"scheduled job). When checked, stock is NOT pushed for this SKU — "
+					"Amazon manages FBA inventory directly; price still syncs normally. "
+					"You can tick/untick this manually, but the next sync re-checks "
+					"Amazon and may overwrite it."
+				),
+			),
 		],
 	}
 
