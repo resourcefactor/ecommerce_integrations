@@ -48,6 +48,7 @@
   "default_shipping_charges_account",
   "erpnext_to_shopify_sync_section",
   "price_list",
+  "push_item_details",
   "shopify_field_mapping",
   "inventory_sync_section",
   "warehouse",
@@ -375,6 +376,14 @@
    "read_only": 1
   },
   {
+   "default": "0",
+   "description": "Also push mapped Item details (title, description, weight, status, metafields) to Shopify when an Item is edited. Leave unchecked to sync only price and stock, e.g. when product details are managed directly in Shopify.",
+   "fieldname": "push_item_details",
+   "fieldtype": "Check",
+   "label": "Push Item Details to Shopify"
+  },
+  {
+   "depends_on": "eval:doc.push_item_details",
    "description": "Map ERPNext Item fields to Shopify product fields, variant fields, or metafields (metafield:namespace.key)",
    "fieldname": "shopify_field_mapping",
    "fieldtype": "Table",
@@ -436,7 +445,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2023-10-24 10:38:49.247431",
+ "modified": "2026-10-21 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "shopify",
  "name": "Shopify Setting",

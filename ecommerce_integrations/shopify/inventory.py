@@ -25,38 +25,19 @@ def push_single_item_to_shopify(setting, ecom_doc) -> str:
 	locations) and price to Shopify right now — the entry point for the
 	"Sync Now" button on Ecommerce Item.
 	"""
-	from ecommerce_integrations.shopify.product import (
-		_apply_metafields,
-		_fetch_product_with_retry,
-		_sync_product_with_retry,
-		map_erpnext_item_to_shopify,
-	)
+	from ecommerce_integrations.shopify.product import _push_item
 
 	item_code = ecom_doc.erpnext_item_code
 
-	shopify_product = _fetch_product_with_retry(ecom_doc.integration_item_code)
-	if not shopify_product:
+	price = setting.get_item_price(item_code)
+	try:
+		if _push_item(setting, ecom_doc, full_sync=True):
+			frappe.db.set_value("Ecommerce Item", ecom_doc.name, "item_synced_on", now(), update_modified=False)
+	except ResourceNotFound:
 		update_inventory_sync_status(ecom_doc.name, time=now(), status="Not Found")
 		return "skipped (Shopify product not found)"
 
-	item = frappe.get_doc("Item", item_code)
-	extra_variant_fields, metafields = map_erpnext_item_to_shopify(
-		shopify_product=shopify_product, erpnext_item=item, setting=setting
-	)
-
-	price = setting.get_item_price(item_code)
-	default_variant = shopify_product.variants[0] if shopify_product.variants else None
-	if default_variant:
-		if price is not None:
-			default_variant.price = price
-		for field, val in (extra_variant_fields or {}).items():
-			setattr(default_variant, field, val)
-
-	_sync_product_with_retry(shopify_product)
-	if metafields:
-		_apply_metafields(shopify_product.id, metafields)
-
-	stock_result = "price only (no location mapping)"
+	stock_result = "none (no location mapping)"
 	location_warehouse_map = setting.get_location_warehouse_map()
 	if location_warehouse_map and ecom_doc.variant_id:
 		variant = _find_variant_with_retry(ecom_doc.variant_id)

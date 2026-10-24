@@ -89,8 +89,12 @@ def generate_oauth_token(shopify_url: str, client_id: str, client_secret: str) -
 		)
 
 
-def is_token_valid(token_expires_at, buffer_minutes: int = 5) -> bool:
-	"""Check if the OAuth token is still valid with a buffer period."""
+def is_token_valid(token_expires_at, buffer_minutes: int = 60) -> bool:
+	"""Check if the OAuth token is still valid with a buffer period.
+
+	The buffer must exceed the longest sync job (~12 min for item sync), since the
+	token is only checked when a session starts, not before each API call.
+	"""
 	if not token_expires_at:
 		return False
 

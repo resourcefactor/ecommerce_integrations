@@ -1,17 +1,22 @@
 import time
 
-from pyactiveresource.connection import ClientError, ResourceNotFound
+from pyactiveresource.connection import ClientError, ResourceNotFound, UnauthorizedAccess
+from pyactiveresource.connection import Error as ActiveResourceError
+from rq.timeouts import JobTimeoutException
 from shopify.resources import Product, Variant
 
 import frappe
 from frappe import _, msgprint
-from frappe.utils import cint, cstr
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Coalesce, Max
+from frappe.utils import cint, cstr, now
+from frappe.utils.background_jobs import is_job_enqueued
 from frappe.utils.nestedset import get_root_of
 
 from ecommerce_integrations.controllers.scheduling import need_to_run
 
 from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item import ecommerce_item
-from ecommerce_integrations.shopify.connection import temp_shopify_session
+from ecommerce_integrations.shopify.connection import refresh_session_token, temp_shopify_session
 from ecommerce_integrations.shopify.constants import (
 	ITEM_SELLING_RATE_FIELD,
 	MODULE_NAME,
@@ -439,6 +444,8 @@ def _apply_metafields(product_id, metafields: list) -> None:
 				"owner_resource": "product",
 				"owner_id": product_id,
 			})
+		except JobTimeoutException:
+			raise
 		except Exception as e:
 			create_shopify_log(
 				status="Error",
@@ -447,11 +454,20 @@ def _apply_metafields(product_id, metafields: list) -> None:
 			)
 
 
+FULL_ITEM_SYNC_JOB_ID = "shopify_full_sync_items_and_price"
+
+
 def sync_items_and_price_to_shopify() -> None:
-	"""Scheduled trigger: enqueues the heavy sync work on the long queue (1500s timeout)."""
+	"""Scheduled trigger: enqueues an incremental sync of items whose selling
+	price (or, with `push_item_details`, Item) changed since they were last
+	pushed (long queue, 1500s timeout)."""
 	setting = frappe.get_doc(SETTING_DOCTYPE)
 
 	if not setting.is_enabled():
+		return
+
+	# the nightly full sync already covers every item
+	if is_job_enqueued(FULL_ITEM_SYNC_JOB_ID):
 		return
 
 	if not need_to_run(SETTING_DOCTYPE, "inventory_sync_frequency", "last_item_sync"):
@@ -460,11 +476,84 @@ def sync_items_and_price_to_shopify() -> None:
 	frappe.enqueue(
 		_do_sync_items_and_price,
 		setting=setting,
+		full_sync=False,
 		queue="long",
 		timeout=1500,
 		job_id="shopify_sync_items_and_price",
 		deduplicate=True,
 	)
+
+
+def full_sync_items_and_price_to_shopify() -> None:
+	"""Nightly trigger: push every eligible item regardless of changes, as a
+	backstop against drift between ERPNext and Shopify."""
+	setting = frappe.get_doc(SETTING_DOCTYPE)
+
+	if not setting.is_enabled():
+		return
+
+	frappe.enqueue(
+		_do_sync_items_and_price,
+		setting=setting,
+		full_sync=True,
+		queue="long",
+		timeout=1500,
+		job_id=FULL_ITEM_SYNC_JOB_ID,
+		deduplicate=True,
+	)
+
+
+def _get_items_to_sync(setting, full_sync: bool) -> list:
+	"""Ecommerce Items to push. By default only items with a selling rate in the
+	Shopify price list (price-only sync). With `push_item_details` every mapped
+	item qualifies. Incremental runs pick items never pushed, items whose last
+	push failed, and items whose Item Price (or, with details, Item) was
+	modified after `item_synced_on`."""
+	push_details = setting.push_item_details
+	if not setting.price_list and not push_details:
+		return []
+
+	EcommerceItem = DocType("Ecommerce Item")
+	Item = DocType("Item")
+	ItemPrice = DocType("Item Price")
+	price_join = (
+		(ItemPrice.item_code == EcommerceItem.erpnext_item_code)
+		& (ItemPrice.price_list == setting.price_list)
+		& (ItemPrice.selling == 1)
+	)
+	query = frappe.qb.from_(EcommerceItem).join(Item).on(Item.name == EcommerceItem.erpnext_item_code)
+	# inner join limits a price-only sync to items that have a price
+	query = query.left_join(ItemPrice) if push_details else query.join(ItemPrice)
+	query = (
+		query.on(price_join)
+		.select(
+			EcommerceItem.name,
+			EcommerceItem.erpnext_item_code,
+			EcommerceItem.integration_item_code,
+			EcommerceItem.variant_id,
+			EcommerceItem.item_synced_on,
+			EcommerceItem.sync_status,
+			Item.modified.as_("item_modified"),
+		)
+		.where(
+			(EcommerceItem.integration == MODULE_NAME)
+			& (EcommerceItem.has_variants == 0)
+			& (Coalesce(EcommerceItem.variant_id, "") != "")
+		)
+		.groupby(EcommerceItem.name)
+	)
+	if full_sync:
+		return query.run(as_dict=True)
+
+	changed = (
+		EcommerceItem.item_synced_on.isnull()
+		| (EcommerceItem.sync_status == "Error")
+		| (Max(ItemPrice.modified) > EcommerceItem.item_synced_on)
+	)
+	if push_details:
+		changed |= Item.modified > EcommerceItem.item_synced_on
+
+	return query.having(changed).run(as_dict=True)
 
 
 @frappe.whitelist()
@@ -497,72 +586,123 @@ def sync_item_to_shopify(ecommerce_item: str) -> dict:
 	}
 
 
-def _fetch_product_with_retry(product_id: str, max_retries: int = 3):
-	for attempt in range(max_retries):
+def _call_with_retry(fn, max_retries: int = 3):
+	"""Run a Shopify REST call, retrying rate limits (429), server errors (5xx)
+	and network timeouts. A 401 refreshes the OAuth token once and retries
+	without using up an attempt."""
+	attempt = 0
+	token_refreshed = False
+	while True:
 		try:
-			return Product.find(product_id)
-		except ResourceNotFound:
-			return None
-		except ClientError as e:
-			if e.response.code == 429 and attempt < max_retries - 1:
-				retry_after = float(e.response.headers.get("retry-after", 2.0))
-				time.sleep(retry_after)
-			else:
+			return fn()
+		except UnauthorizedAccess:
+			if token_refreshed or not refresh_session_token():
 				raise
+			token_refreshed = True
+			continue
+		except ClientError as e:
+			if e.response.code != 429 or attempt >= max_retries - 1:
+				raise
+			delay = float(e.response.headers.get("retry-after", 2.0))
+		except (ActiveResourceError, OSError):
+			# ServerError (5xx) and wrapped URLErrors are ActiveResourceErrors;
+			# a socket read timeout surfaces as a bare TimeoutError (an OSError).
+			if attempt >= max_retries - 1:
+				raise
+			delay = 2.0 * (attempt + 1)
+		attempt += 1
+		time.sleep(delay)
 
 
-def _sync_product_with_retry(shopify_product, max_retries: int = 3) -> None:
-	for attempt in range(max_retries):
-		try:
-			shopify_product.save()
-			return
-		except ClientError as e:
-			if e.response.code == 429 and attempt < max_retries - 1:
-				retry_after = float(e.response.headers.get("retry-after", 2.0))
-				time.sleep(retry_after)
-			else:
-				raise
+def _push_price_with_retry(product_id: str, variant_id: str, price, max_retries: int = 3) -> None:
+	"""Update only the price of one variant: a single PUT that leaves every other
+	product/variant detail (managed directly in Shopify) untouched."""
+	variant = Variant({"id": variant_id, "product_id": product_id, "price": price})
+	_call_with_retry(variant.save, max_retries)
+
+
+def _push_item_details(setting, ecom, price) -> None:
+	"""Push mapped Item details (and price, if any) by fetching the Shopify
+	product, applying the mapping and saving it back. Only used when
+	`push_item_details` is enabled; raises ResourceNotFound if the product is gone."""
+	shopify_product = _call_with_retry(lambda: Product.find(ecom.integration_item_code))
+	item = frappe.get_doc("Item", ecom.erpnext_item_code)
+	extra_variant_fields, metafields = map_erpnext_item_to_shopify(
+		shopify_product=shopify_product, erpnext_item=item, setting=setting
+	)
+
+	variants = shopify_product.variants or []
+	variant = next((v for v in variants if str(v.id) == str(ecom.variant_id)), variants[0] if variants else None)
+	if variant:
+		if price is not None:
+			variant.price = price
+		for field, val in extra_variant_fields.items():
+			setattr(variant, field, val)
+
+	_call_with_retry(shopify_product.save)
+	_apply_metafields(shopify_product.id, metafields)
+
+
+def _push_item(setting, ecom, full_sync: bool = True) -> bool:
+	"""Push one Ecommerce Item to Shopify. Pushes the full item details when
+	enabled and the Item changed (or on a full sync), otherwise just the price.
+	Returns False when there was nothing to push."""
+	price = setting.get_item_price(ecom.erpnext_item_code)
+	item_changed = (
+		full_sync
+		or not ecom.item_synced_on
+		or ecom.sync_status == "Error"
+		or (ecom.item_modified and ecom.item_modified > ecom.item_synced_on)
+	)
+	if setting.push_item_details and item_changed:
+		_push_item_details(setting, ecom, price)
+	elif price is not None:
+		_push_price_with_retry(ecom.integration_item_code, ecom.variant_id, price)
+	else:
+		return False
+	return True
 
 
 @temp_shopify_session
-def _do_sync_items_and_price(setting) -> None:
-	synced_items = frappe.get_all(
-		"Ecommerce Item",
-		filters={"integration": MODULE_NAME, "has_variants": 0},
-		fields=["erpnext_item_code", "integration_item_code", "variant_id"],
-	)
+def _do_sync_items_and_price(setting, full_sync: bool = True) -> None:
+	# stamp with the run's start time so edits made while the run is in
+	# progress are still picked up by the next incremental sync
+	synced_on = now()
+	synced_items = _get_items_to_sync(setting, full_sync)
+	if not synced_items:
+		return
 
+	sync_type = "full" if full_sync else "incremental"
 	updated = 0
 	errors = 0
-	for ecom in synced_items:
+	for idx, ecom in enumerate(synced_items, start=1):
+		# commit in batches so a crash mid-run keeps earlier progress and the
+		# DB connection never sits idle for the whole job
+		if idx % 25 == 0:
+			frappe.db.commit()
 		try:
-			item = frappe.get_doc("Item", ecom.erpnext_item_code)
-			shopify_product = _fetch_product_with_retry(ecom.integration_item_code)
-			if not shopify_product:
-				frappe.db.set_value("Ecommerce Item", ecom.name, "sync_status", "Not Found", update_modified=False)
+			if not _push_item(setting, ecom, full_sync):
 				continue
-
-			extra_variant_fields, metafields = map_erpnext_item_to_shopify(
-				shopify_product=shopify_product, erpnext_item=item, setting=setting
-			)
-
-			price = setting.get_item_price(item.item_code)
-			if (price is not None or extra_variant_fields) and ecom.variant_id:
-				default_variant = shopify_product.variants[0] if shopify_product.variants else None
-				if default_variant:
-					if price is not None:
-						default_variant.price = price
-					for field, val in (extra_variant_fields or {}).items():
-						setattr(default_variant, field, val)
-
-			_sync_product_with_retry(shopify_product)
-			_apply_metafields(shopify_product.id, metafields)
 			frappe.db.set_value(
 				"Ecommerce Item", ecom.name,
-				{"sync_status": "Synced", "sync_error": ""},
+				{"sync_status": "Synced", "sync_error": "", "item_synced_on": synced_on},
 				update_modified=False,
 			)
 			updated += 1
+		except ResourceNotFound:
+			# stamped so incremental runs don't retry it every time; the nightly full sync rechecks it
+			frappe.db.set_value(
+				"Ecommerce Item", ecom.name,
+				{"sync_status": "Not Found", "sync_error": "", "item_synced_on": synced_on},
+				update_modified=False,
+			)
+		except JobTimeoutException:
+			create_shopify_log(
+				status="Error",
+				message=f"Scheduled {sync_type} item sync timed out: {updated} updated, {errors} errors before timeout",
+				method="sync_items_and_price_to_shopify",
+			)
+			raise
 		except Exception as e:
 			errors += 1
 			frappe.db.set_value(
@@ -578,6 +718,6 @@ def _do_sync_items_and_price(setting) -> None:
 
 	create_shopify_log(
 		status="Success" if errors == 0 else "Partial Success",
-		message=f"Scheduled item sync: {updated} updated, {errors} errors",
+		message=f"Scheduled {sync_type} item sync: {updated} updated, {errors} errors",
 		method="sync_items_and_price_to_shopify",
 	)

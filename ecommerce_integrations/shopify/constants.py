@@ -8,6 +8,10 @@ OLD_SETTINGS_DOCTYPE = "Shopify Settings"
 
 API_VERSION = "2025-04"
 
+# Socket timeout (seconds) for every Shopify REST call. Without it a stalled
+# connection blocks the worker until the RQ job timeout kills the whole run.
+REQUEST_TIMEOUT = 30
+
 # GraphQL topic format (uppercase with underscores) for webhook registration
 WEBHOOK_EVENTS = [
 	"ORDERS_CREATE",
