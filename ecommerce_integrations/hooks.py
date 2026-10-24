@@ -160,6 +160,10 @@ scheduler_events = {
 			"ecommerce_integrations.unicommerce.inventory.update_inventory_on_unicommerce",
 			"ecommerce_integrations.unicommerce.delivery_note.prepare_delivery_note",
 		],
+		# Nightly full item/price push to Shopify, backstop for the incremental sync
+		"0 0 * * *": [
+			"ecommerce_integrations.shopify.product.full_sync_items_and_price_to_shopify",
+		],
 	},
 }
 

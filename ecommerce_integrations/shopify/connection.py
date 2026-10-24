@@ -6,11 +6,12 @@ import json
 
 import frappe
 from frappe import _
-from shopify import GraphQL, Session
+from shopify import GraphQL, Session, ShopifyResource
 
 from ecommerce_integrations.shopify.constants import (
 	API_VERSION,
 	EVENT_MAPPER,
+	REQUEST_TIMEOUT,
 	SETTING_DOCTYPE,
 	WEBHOOK_EVENTS,
 )
@@ -37,10 +38,30 @@ def temp_shopify_session(func):
 			access_token = _get_access_token(setting)
 			auth_details = (setting.shopify_url, API_VERSION, access_token)
 
+			ShopifyResource.timeout = REQUEST_TIMEOUT
 			with Session.temp(*auth_details):
 				return func(*args, **kwargs)
 
 	return wrapper
+
+
+def refresh_session_token() -> bool:
+	"""Fetch a fresh OAuth token and swap it into the active Shopify session.
+
+	For long-running jobs that hit a 401 because the token expired mid-run.
+	Returns False for static-token auth, where a 401 can't be fixed by refreshing.
+	"""
+	setting = frappe.get_doc(SETTING_DOCTYPE)
+	if setting.authentication_method != "OAuth 2.0 Client Credentials":
+		return False
+
+	from ecommerce_integrations.shopify.oauth import refresh_oauth_token
+
+	access_token = refresh_oauth_token(setting)
+	# persist now so a later rollback of the calling job can't drop the new token
+	frappe.db.commit()
+	ShopifyResource.activate_session(Session(setting.shopify_url, API_VERSION, access_token))
+	return True
 
 
 def _get_access_token(setting) -> str:
