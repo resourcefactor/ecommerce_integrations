@@ -125,6 +125,7 @@ doc_events = {
 	"Item Price": {"on_change": "ecommerce_integrations.utils.price_list.discard_item_prices"},
 	"Pick List": {"validate": "ecommerce_integrations.unicommerce.pick_list.validate"},
 	"Sales Invoice": {
+		"before_validate": "ecommerce_integrations.takealot.invoice.set_fee_rows",
 		"on_submit": "ecommerce_integrations.unicommerce.invoice.on_submit",
 		"on_cancel": "ecommerce_integrations.unicommerce.invoice.on_cancel",
 	},
@@ -138,6 +139,8 @@ scheduler_events = {
 		"ecommerce_integrations.shopify.inventory.update_inventory_on_shopify",
 		"ecommerce_integrations.shopify.product.sync_items_and_price_to_shopify",
 		"ecommerce_integrations.amazon.inventory.update_inventory_on_amazon",
+		"ecommerce_integrations.takealot.order.sync_orders",
+		"ecommerce_integrations.takealot.offer_sync.push_offers",
 	],
 	"daily": [],
 	"daily_long": ["ecommerce_integrations.zenoti.doctype.zenoti_settings.zenoti_settings.sync_stocks"],

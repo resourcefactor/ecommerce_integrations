@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`ecommerce_integrations` is a Frappe/ERPNext app (upstream: `frappe/ecommerce_integrations`) that connects ERPNext to four external ecommerce/retail platforms: **Shopify**, **Unicommerce**, **Zenoti**, and **Amazon** (via SP-API). Each integration is a self-contained sub-package under `ecommerce_integrations/` with its own settings doctype, sync logic, and tests. Requires Frappe/ERPNext >= 15.0.0, < 16.0.0 and Python >= 3.10.
+`ecommerce_integrations` is a Frappe/ERPNext app (upstream: `frappe/ecommerce_integrations`) that connects ERPNext to five external ecommerce/retail platforms: **Shopify**, **Unicommerce**, **Zenoti**, **Amazon** (via SP-API) and **Takealot** (South African marketplace). Each integration is a self-contained sub-package under `ecommerce_integrations/` with its own settings doctype, sync logic, and tests. Requires Frappe/ERPNext >= 15.0.0, < 16.0.0 and Python >= 3.10.
 
 This fork (`resourcefactor/ecommerce_integrations`) carries the same custom work on two branches: `version-15` (Frappe/ERPNext v15, this branch) and `version-16`. When porting a change between them, keep each branch's own test base class, import ordering, and dependency pins.
 
@@ -63,6 +63,12 @@ These are the glue every integration builds on:
 - **Shopify** (`shopify/`) is class/object-oriented: `ShopifyProduct`, `ShopifyOrder`, etc. wrap a platform entity and its sync behavior. API calls are made through the `shopify` Python SDK, gated by the `@temp_shopify_session` decorator (`shopify/connection.py`), which opens a scoped SDK session (supports both static-token and OAuth2 client-credentials auth, auto-refreshing tokens) and is a no-op during tests (`frappe.flags.in_test`).
 - **Unicommerce** (`unicommerce/`) is function/module-oriented: plain functions per concern (`product.py`, `order.py`, `grn.py`, `invoice.py`, `inventory.py`, ...) that take an explicit `UnicommerceAPIClient` (`unicommerce/api_client.py`) instance rather than a decorator-managed session.
 - **Amazon** (`amazon/`) and **Zenoti** (`zenoti/`) are the smallest integrations — mostly settings doctypes plus a handful of module-level sync functions (see `scheduler_events` in hooks.py for their entry points).
+- **Takealot** (`takealot/`) is function/module-oriented like Unicommerce, with a `TakealotClient` (`takealot/api_client.py`, `X-API-Key` auth, `continuation_token` paging, 429/rate-limit backoff). Takealot has no webhooks or buyer data, so everything is polled and every order goes to one configured customer. Facts verified against the live API that the code depends on:
+  - `GET /sales` returns one row per order item. `selling_price` is the VAT-inclusive **line total**, so rate = selling_price / quantity.
+  - Sale fees are 0 until the line is "Shipped to Customer" and include VAT. Sales Orders are created at order time; `order.refresh_sales_order` re-reads `lookback_days` to write fees onto the lines. `invoice.set_fee_rows` (Sales Invoice `before_validate`) rebuilds the fee rows from those line fields, because a submitted SO's taxes can't change.
+  - SKUs are free text (item codes, truncated names, "x 2" bundles, brand tags), so `product.match_item` tries several rules. `Ecommerce Item.takealot_pack_qty` holds bundle sizes.
+  - Leadtime stock only: warehouse ids come from `GET /seller?expands=warehouses` (`merchant_warehouse_id`), and stock is pushed only to offers with `minimum_leadtime_days > 0`.
+  - The WAF rejects the `Python-urllib` User-Agent.
 
 When adding a new sync path to an existing integration, match that integration's existing pattern rather than the other's.
 

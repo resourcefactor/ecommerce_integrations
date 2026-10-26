@@ -4,6 +4,7 @@
 const SYNC_METHOD_BY_INTEGRATION = {
 	amazon: "ecommerce_integrations.amazon.product.sync_item_to_amazon",
 	shopify: "ecommerce_integrations.shopify.product.sync_item_to_shopify",
+	takealot: "ecommerce_integrations.takealot.offer_sync.sync_item_to_takealot",
 };
 
 frappe.ui.form.on("Ecommerce Item", {

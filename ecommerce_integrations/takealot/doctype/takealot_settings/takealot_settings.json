@@ -1,0 +1,461 @@
+{
+ "actions": [],
+ "creation": "2026-10-25 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "enable_takealot",
+  "column_break_enable",
+  "authentication_section",
+  "api_key",
+  "api_url",
+  "column_break_auth",
+  "seller_id",
+  "seller_name",
+  "defaults_section",
+  "company",
+  "customer",
+  "warehouse",
+  "leadtime_warehouse",
+  "column_break_defaults",
+  "cost_center",
+  "sales_order_series",
+  "submit_sales_order",
+  "region_section",
+  "region_warehouses",
+  "vat_fees_section",
+  "vat_account",
+  "vat_rate",
+  "fee_vat_account",
+  "column_break_fees",
+  "success_fee_account",
+  "fulfillment_fee_account",
+  "courier_collection_fee_account",
+  "stock_transfer_fee_account",
+  "order_sync_section",
+  "sync_orders",
+  "sync_orders_from",
+  "order_sync_frequency",
+  "lookback_days",
+  "column_break_order",
+  "last_order_sync",
+  "orders_synced_till",
+  "old_orders_section",
+  "old_orders_from",
+  "column_break_old_orders",
+  "old_orders_to",
+  "returns_section",
+  "sync_returns",
+  "return_warehouse",
+  "removal_warehouse",
+  "column_break_returns",
+  "returns_lookback_days",
+  "submit_returns",
+  "returns_synced_till",
+  "offer_section",
+  "push_price",
+  "price_list",
+  "push_stock",
+  "offer_sync_frequency",
+  "column_break_offer",
+  "last_offer_sync",
+  "last_offer_import",
+  "sku_ignore_words",
+  "seller_warehouse_section",
+  "seller_warehouses"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enable_takealot",
+   "fieldtype": "Check",
+   "label": "Enable Takealot"
+  },
+  {
+   "fieldname": "column_break_enable",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "authentication_section",
+   "fieldtype": "Section Break",
+   "label": "Authentication"
+  },
+  {
+   "description": "Generate it in Seller Portal \u203a API Access. Only one key is active per seller account.",
+   "fieldname": "api_key",
+   "fieldtype": "Password",
+   "label": "API Key",
+   "length": 255,
+   "mandatory_depends_on": "eval:doc.enable_takealot"
+  },
+  {
+   "default": "https://marketplace-api.takealot.com/v1",
+   "fieldname": "api_url",
+   "fieldtype": "Data",
+   "label": "API URL",
+   "mandatory_depends_on": "eval:doc.enable_takealot"
+  },
+  {
+   "fieldname": "column_break_auth",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "seller_id",
+   "fieldtype": "Data",
+   "label": "Seller ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "seller_name",
+   "fieldtype": "Data",
+   "label": "Seller Name",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "defaults_section",
+   "fieldtype": "Section Break",
+   "label": "ERPNext Defaults"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "mandatory_depends_on": "eval:doc.enable_takealot",
+   "options": "Company"
+  },
+  {
+   "description": "Takealot does not share buyer details, so every order is booked to this customer.",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Takealot Customer",
+   "mandatory_depends_on": "eval:doc.enable_takealot",
+   "options": "Customer"
+  },
+  {
+   "description": "Warehouse holding your stock at Takealot DCs. Used for order lines unless a region mapping below applies.",
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Takealot Warehouse",
+   "mandatory_depends_on": "eval:doc.enable_takealot",
+   "options": "Warehouse"
+  },
+  {
+   "description": "Optional. Used for leadtime order lines, which ship from your own warehouse.",
+   "fieldname": "leadtime_warehouse",
+   "fieldtype": "Link",
+   "label": "Leadtime Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "column_break_defaults",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "sales_order_series",
+   "fieldtype": "Select",
+   "label": "Sales Order Series"
+  },
+  {
+   "default": "0",
+   "fieldname": "submit_sales_order",
+   "fieldtype": "Check",
+   "label": "Submit Sales Orders"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "region_section",
+   "fieldtype": "Section Break",
+   "label": "Takealot DC Regions"
+  },
+  {
+   "description": "Optional. Book order lines to a warehouse per Takealot DC region the stock ships from (CPT, JHB, DBN).",
+   "fieldname": "region_warehouses",
+   "fieldtype": "Table",
+   "label": "Region Warehouses",
+   "options": "Takealot Region Warehouse"
+  },
+  {
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "vat_fees_section",
+   "fieldtype": "Section Break",
+   "label": "VAT & Fees"
+  },
+  {
+   "description": "Takealot selling prices include VAT; it is split out into this account. Leave empty if not VAT registered.",
+   "fieldname": "vat_account",
+   "fieldtype": "Link",
+   "label": "Output VAT Account",
+   "options": "Account"
+  },
+  {
+   "default": "15",
+   "fieldname": "vat_rate",
+   "fieldtype": "Float",
+   "label": "VAT Rate (%)",
+   "mandatory_depends_on": "eval:doc.vat_account"
+  },
+  {
+   "description": "Takealot fees include VAT. When set, fees are booked net of VAT and the VAT goes to this account.",
+   "fieldname": "fee_vat_account",
+   "fieldtype": "Link",
+   "label": "Input VAT Account (Fees)",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_fees",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "success_fee_account",
+   "fieldtype": "Link",
+   "label": "Success Fee Account",
+   "mandatory_depends_on": "eval:doc.sync_orders",
+   "options": "Account"
+  },
+  {
+   "fieldname": "fulfillment_fee_account",
+   "fieldtype": "Link",
+   "label": "Fulfilment Fee Account",
+   "mandatory_depends_on": "eval:doc.sync_orders",
+   "options": "Account"
+  },
+  {
+   "fieldname": "courier_collection_fee_account",
+   "fieldtype": "Link",
+   "label": "Courier Collection Fee Account",
+   "mandatory_depends_on": "eval:doc.sync_orders",
+   "options": "Account"
+  },
+  {
+   "fieldname": "stock_transfer_fee_account",
+   "fieldtype": "Link",
+   "label": "Stock Transfer Fee Account",
+   "mandatory_depends_on": "eval:doc.sync_orders",
+   "options": "Account"
+  },
+  {
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "order_sync_section",
+   "fieldtype": "Section Break",
+   "label": "Order Sync"
+  },
+  {
+   "default": "0",
+   "fieldname": "sync_orders",
+   "fieldtype": "Check",
+   "label": "Enable Order Sync"
+  },
+  {
+   "description": "Orders placed before this date are never synced automatically.",
+   "fieldname": "sync_orders_from",
+   "fieldtype": "Date",
+   "label": "Sync Orders From",
+   "mandatory_depends_on": "eval:doc.sync_orders"
+  },
+  {
+   "default": "30",
+   "fieldname": "order_sync_frequency",
+   "fieldtype": "Select",
+   "label": "Order Sync Frequency (In minutes)",
+   "options": "15\n30\n60"
+  },
+  {
+   "default": "7",
+   "description": "Each run re-reads this many days of orders to pick up fees (filled once a line ships), status changes and cancellations.",
+   "fieldname": "lookback_days",
+   "fieldtype": "Int",
+   "label": "Lookback Days"
+  },
+  {
+   "fieldname": "column_break_order",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_order_sync",
+   "fieldtype": "Datetime",
+   "label": "Last Order Sync",
+   "read_only": 1
+  },
+  {
+   "fieldname": "orders_synced_till",
+   "fieldtype": "Date",
+   "label": "Orders Synced Till",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "old_orders_section",
+   "fieldtype": "Section Break",
+   "label": "Sync Old Orders"
+  },
+  {
+   "fieldname": "old_orders_from",
+   "fieldtype": "Date",
+   "label": "Old Orders From"
+  },
+  {
+   "fieldname": "column_break_old_orders",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Use Takealot \u203a Sync Orders Now (or Sync Returns Now) to pull this date range on demand.",
+   "fieldname": "old_orders_to",
+   "fieldtype": "Date",
+   "label": "Old Orders To"
+  },
+  {
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "returns_section",
+   "fieldtype": "Section Break",
+   "label": "Returns"
+  },
+  {
+   "default": "0",
+   "description": "Creates credit notes against the Sales Invoice of the returned order.",
+   "fieldname": "sync_returns",
+   "fieldtype": "Check",
+   "label": "Enable Returns Sync"
+  },
+  {
+   "description": "Returns that go back into sellable stock at Takealot. Defaults to the Takealot Warehouse.",
+   "fieldname": "return_warehouse",
+   "fieldtype": "Link",
+   "label": "Return Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "description": "Returns Takealot sends back to you on a removal order. Defaults to the Return Warehouse.",
+   "fieldname": "removal_warehouse",
+   "fieldtype": "Link",
+   "label": "Removal Order Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "column_break_returns",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "30",
+   "fieldname": "returns_lookback_days",
+   "fieldtype": "Int",
+   "label": "Returns Lookback Days"
+  },
+  {
+   "default": "0",
+   "fieldname": "submit_returns",
+   "fieldtype": "Check",
+   "label": "Submit Credit Notes"
+  },
+  {
+   "fieldname": "returns_synced_till",
+   "fieldtype": "Date",
+   "label": "Returns Synced Till",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "offer_section",
+   "fieldtype": "Section Break",
+   "label": "Offers, Price & Stock"
+  },
+  {
+   "default": "0",
+   "fieldname": "push_price",
+   "fieldtype": "Check",
+   "label": "Update Price on Takealot"
+  },
+  {
+   "description": "Use a price list kept for Takealot: every mapped offer's price is overwritten with this list's VAT inclusive price, rounded to whole Rand. Your shop price lists differ a lot from Takealot prices.",
+   "fieldname": "price_list",
+   "fieldtype": "Link",
+   "label": "Price List",
+   "mandatory_depends_on": "eval:doc.push_price",
+   "options": "Price List"
+  },
+  {
+   "default": "0",
+   "description": "Stock held at Takealot DCs is managed by Takealot and can't be updated through the API.",
+   "fieldname": "push_stock",
+   "fieldtype": "Check",
+   "label": "Update Leadtime Stock on Takealot"
+  },
+  {
+   "default": "15",
+   "fieldname": "offer_sync_frequency",
+   "fieldtype": "Select",
+   "label": "Price & Stock Sync Frequency (In minutes)",
+   "options": "5\n10\n15\n30\n60"
+  },
+  {
+   "fieldname": "column_break_offer",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_offer_sync",
+   "fieldtype": "Datetime",
+   "label": "Last Price & Stock Sync",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_offer_import",
+   "fieldtype": "Datetime",
+   "label": "Last Offer Import",
+   "read_only": 1
+  },
+  {
+   "description": "Comma separated tags your Takealot SKUs carry besides the item code or name, e.g. DW. They are stripped before matching SKUs to items.",
+   "fieldname": "sku_ignore_words",
+   "fieldtype": "Data",
+   "label": "Ignore Words in SKUs"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.enable_takealot",
+   "fieldname": "seller_warehouse_section",
+   "fieldtype": "Section Break",
+   "label": "Leadtime Warehouses"
+  },
+  {
+   "description": "Stock of the mapped ERPNext warehouses is pushed to each Takealot seller warehouse. Use Takealot \u203a Fetch Seller Warehouses to fill the IDs.",
+   "fieldname": "seller_warehouses",
+   "fieldtype": "Table",
+   "label": "Seller Warehouses",
+   "options": "Takealot Seller Warehouse"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-25 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Takealot",
+ "name": "Takealot Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
