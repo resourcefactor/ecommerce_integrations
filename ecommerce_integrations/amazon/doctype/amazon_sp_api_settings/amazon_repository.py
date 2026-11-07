@@ -510,9 +510,14 @@ class AmazonRepository:
 
 	def get_orders(self, created_after) -> list:
 		orders = self.get_orders_instance()
+		# "Pending"/"PendingAvailability" specifically mean payment hasn't been
+		# authorized by Amazon yet (the latter is the pre-order variant of the
+		# same thing) — deliberately excluded so we only pull orders in ERP
+		# once Amazon has confirmed the customer actually paid. An order that's
+		# still Pending today simply won't appear yet; once it progresses to
+		# Unshipped on Amazon's side, our next scheduled fetch (re-querying the
+		# same date range) will pick it up normally.
 		order_statuses = [
-			"PendingAvailability",
-			"Pending",
 			"Unshipped",
 			"PartiallyShipped",
 			"Shipped",
