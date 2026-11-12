@@ -75,7 +75,22 @@ class AmazonRepository:
 		for _x in range(max_retries):
 			try:
 				result = sp_api_method(**kwargs)
-				return result.get("payload")
+				payload = result.get("payload")
+				if payload is None:
+					# make_request() never inspects the response itself, so an
+					# error response (most commonly throttling/quota-exceeded,
+					# which has no "payload" key) doesn't raise SPAPIError here —
+					# it would otherwise pass straight through as `None` to the
+					# caller. Treat it the same as a raised SPAPIError so it
+					# gets retried with backoff instead of silently propagating.
+					api_errors = result.get("errors") or [{}]
+					error = api_errors[0].get("code", "-")
+					if error not in errors:
+						errors[error] = api_errors[0].get("message", "-")
+
+					time.sleep(1)
+					continue
+				return payload
 			except SPAPIError as e:
 				if e.error not in errors:
 					errors[e.error] = e.error_description
@@ -556,6 +571,12 @@ class AmazonRepository:
 						message=frappe.get_traceback(),
 					)
 					continue
+				finally:
+					# create_sales_order() makes one or more SP-API calls
+					# (get_order_items, get_charges_and_fees) per order with no
+					# pacing between orders — a back-to-back burst across a
+					# large order list was triggering Amazon's throttling.
+					time.sleep(0.3)
 
 				if sales_order:
 					sales_orders.append(sales_order)
